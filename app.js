@@ -363,6 +363,8 @@ let osmGeoJsonResult = null;
 let osmGeoJsonError = null;
 let osmGeoJsonText = "";
 let todayEditMode = false;
+let backupImportMessage = null;
+let backupImportStatus = null;
 const storageKey = `golf-tee-strategy:${courseData.id}:landing-zones`;
 const courseSelector = document.querySelector("#courseSelector");
 const holeSelector = document.querySelector("#holeSelector");
@@ -435,16 +437,78 @@ function exportCourseData() {
 }
 
 async function importCourseData(file) {
-  const backup = JSON.parse(await file.text());
+  let backup;
+  try {
+    backup = JSON.parse(await file.text());
+  } catch {
+    throw new Error("JSONの形式が正しくありません。");
+  }
   const importedHoles = backup?.course?.holes;
   if (!Array.isArray(importedHoles)) throw new Error("読み込めるコースデータが見つかりません。");
-  importedHoles.forEach((importedHole) => {
-    const hole = holeByNumber(importedHole.holeNumber);
-    if (hole && Array.isArray(importedHole.landingZones)) {
-      Object.assign(hole, importedHole, { landingZones: importedHole.landingZones.map(normalizeLandingZone) });
+
+  const matched = importedHoles
+    .filter((importedHole) => importedHole && typeof importedHole === "object")
+    .map((importedHole) => ({ importedHole, hole: holeByNumber(Number(importedHole.holeNumber)) }))
+    .filter(({ hole }) => Boolean(hole));
+  if (matched.length === 0) throw new Error("現在のコースに一致するホール番号がありません。");
+
+  const previousValues = matched.map(({ hole }) => ({
+    hole,
+    landingZones: hole.landingZones,
+    mapData: hole.mapData,
+    todayAdjustment: hole.todayAdjustment,
+    roundRecord: hole.roundRecord,
+  }));
+  let restoredRoundRecords = 0;
+
+  matched.forEach(({ importedHole, hole }) => {
+    // 公式コース情報や推薦用データは現行版を維持し、ユーザーが保存した値だけを復元します。
+    if (Array.isArray(importedHole.landingZones)) {
+      const importedByDistance = new Map(importedHole.landingZones
+        .filter((zone) => zone && Number.isFinite(Number(zone.distanceFromTee)))
+        .map((zone) => [Number(zone.distanceFromTee), normalizeLandingZone(zone)]));
+      const currentDistances = new Set(hole.landingZones.map((zone) => Number(zone.distanceFromTee)));
+      hole.landingZones = hole.landingZones.map((zone) => importedByDistance.get(Number(zone.distanceFromTee)) ?? zone);
+      importedByDistance.forEach((zone, distance) => {
+        if (!currentDistances.has(distance)) hole.landingZones.push(zone);
+      });
+      hole.landingZones.sort((a, b) => a.distanceFromTee - b.distanceFromTee);
+    }
+    if (importedHole.mapData && typeof importedHole.mapData === "object" && !Array.isArray(importedHole.mapData)) {
+      hole.mapData = {
+        ...createEmptyMapData(),
+        ...hole.mapData,
+        ...importedHole.mapData,
+        featureStatus: {
+          ...createEmptyMapData().featureStatus,
+          ...hole.mapData?.featureStatus,
+          ...importedHole.mapData.featureStatus,
+        },
+      };
+    }
+    if (importedHole.todayAdjustment && typeof importedHole.todayAdjustment === "object" && !Array.isArray(importedHole.todayAdjustment)) {
+      hole.todayAdjustment = { ...hole.todayAdjustment, ...importedHole.todayAdjustment };
+    }
+    if (importedHole.roundRecord && typeof importedHole.roundRecord === "object" && !Array.isArray(importedHole.roundRecord)) {
+      hole.roundRecord = { ...importedHole.roundRecord };
+      restoredRoundRecords += 1;
     }
   });
-  saveLandingZones();
+
+  try {
+    saveLandingZones();
+  } catch {
+    previousValues.forEach(({ hole, landingZones, mapData, todayAdjustment, roundRecord }) => {
+      hole.landingZones = landingZones;
+      hole.mapData = mapData;
+      hole.todayAdjustment = todayAdjustment;
+      if (roundRecord === undefined) delete hole.roundRecord;
+      else hole.roundRecord = roundRecord;
+    });
+    throw new Error("端末への保存に失敗しました。空き容量を確認してください。");
+  }
+
+  return { totalHoles: importedHoles.length, matchedHoles: matched.length, restoredRoundRecords };
 }
 
 function nullableNumber(value) {
@@ -853,6 +917,7 @@ function renderEditor(hole) {
   return `<section class="course-editor" aria-labelledby="course-editor-title">
     <div class="editor-title"><div><h2 id="course-editor-title">コースデータ編集</h2><p>確認済みの実測値だけを入力してください。空欄は未登録（null）のまま保存されます。</p></div><span class="precision-status ${isHoleReadyForPrecision(hole) ? "ready" : ""}">${precisionStatus}</span></div>
     <div class="backup-actions"><button id="exportData" type="button">JSONを書き出す</button><label class="import-button">JSONを読み込む<input id="importData" type="file" accept="application/json" /></label></div>
+    ${backupImportMessage ? `<p class="backup-import-message ${backupImportStatus === "error" ? "error" : "success"}" role="${backupImportStatus === "error" ? "alert" : "status"}">${escapeHtml(backupImportMessage)}</p>` : ""}
     <form id="addDistanceForm" class="add-distance"><label>距離地点を追加<input type="number" inputmode="decimal" min="1" name="distanceFromTee" placeholder="例：220" required /></label><button type="submit">追加</button></form>
     <form id="landingZoneForm">${rows}<button class="save-button" type="submit">この内容を保存</button></form>
   </section>`;
@@ -1389,8 +1454,15 @@ developerScreen.addEventListener("submit", (event) => {
 developerScreen.addEventListener("change", async (event) => {
   const input = event.target.closest("#importData");
   if (!input?.files?.[0]) return;
-  try { await importCourseData(input.files[0]); renderDeveloperScreen(); }
-  catch { window.alert("JSONデータを読み込めませんでした。書き出したバックアップを選んでください。"); }
+  try {
+    const result = await importCourseData(input.files[0]);
+    backupImportStatus = "success";
+    backupImportMessage = `${result.totalHoles}ホール中${result.matchedHoles}ホールを読み込み、実戦記録${result.restoredRoundRecords}件を復元しました。`;
+  } catch (error) {
+    backupImportStatus = "error";
+    backupImportMessage = `読み込みに失敗しました：${error instanceof Error ? error.message : "ファイルを確認してください。"}`;
+  }
+  renderDeveloperScreen();
 });
 teeSelector.addEventListener("click", (event) => {
   const button = event.target.closest("[data-tee]");
@@ -1515,10 +1587,14 @@ strategyCard.addEventListener("change", async (event) => {
   const input = event.target.closest("#importData");
   if (!input?.files?.[0]) return;
   try {
-    await importCourseData(input.files[0]);
+    const result = await importCourseData(input.files[0]);
+    backupImportStatus = "success";
+    backupImportMessage = `${result.totalHoles}ホール中${result.matchedHoles}ホールを読み込み、実戦記録${result.restoredRoundRecords}件を復元しました。`;
     renderStrategy();
-  } catch {
-    window.alert("JSONデータを読み込めませんでした。書き出したバックアップを選んでください。");
+  } catch (error) {
+    backupImportStatus = "error";
+    backupImportMessage = `読み込みに失敗しました：${error instanceof Error ? error.message : "ファイルを確認してください。"}`;
+    window.alert(backupImportMessage);
   }
 });
 document.querySelector("#previousButton").addEventListener("click", () => selectHole(selected.hole - 1));
