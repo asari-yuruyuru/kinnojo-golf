@@ -1,0 +1,25 @@
+{
+  "name": "鬼ノ城ゴルフ倶楽部 ティーショット戦略",
+  "short_name": "鬼ノ城ゴルフ",
+  "id": "./",
+  "display": "standalone",
+  "start_url": "./",
+  "scope": "./",
+  "background_color": "#102d26",
+  "theme_color": "#102d26",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
