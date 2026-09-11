@@ -1419,7 +1419,13 @@ developerScreen.addEventListener("click", (event) => {
   if (event.target.closest("#developerEditToggle")) { editMode = !editMode; renderDeveloperScreen(); }
   const holeButton = event.target.closest("[data-developer-hole]");
   if (holeButton) { selected.hole = Number(holeButton.dataset.developerHole); selected.course = selected.hole <= 9 ? "out" : "in"; editMode = false; renderDeveloperScreen(); }
-  if (event.target.closest("#startNewRound") && window.confirm("当日条件・使用クラブ・結果・メモを全18ホール分リセットします。新しいラウンドを開始しますか？")) { resetRoundForNewPlay(); renderCurrentPlayState(); renderDeveloperScreen(); }
+  if (event.target.closest("#startNewRound") && window.confirm("当日条件・使用クラブ・結果・メモを全18ホール分リセットします。新しいラウンドを開始しますか？")) {
+    resetRoundForNewPlay();
+    editMode = false;
+    showDeveloperScreen(false);
+    window.scrollTo(0, 0);
+    return;
+  }
   if (event.target.closest("#exportData")) exportCourseData();
 });
 developerScreen.addEventListener("submit", (event) => {
