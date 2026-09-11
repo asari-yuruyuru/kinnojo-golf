@@ -872,7 +872,14 @@ function resetRoundForNewPlay() {
     delete hole.roundRecord;
   });
   saveLandingZones();
+  selected.hole = 1;
+  selected.course = "out";
   todayEditMode = false;
+}
+
+function renderCurrentPlayState() {
+  renderSelectors();
+  renderStrategy();
 }
 
 function showDeveloperScreen(show) {
@@ -881,6 +888,7 @@ function showDeveloperScreen(show) {
   developerScreen.hidden = !show;
   bottomNav.hidden = show;
   if (show) renderDeveloperScreen();
+  else renderCurrentPlayState();
 }
 
 function isZoneReadyForPrecision(zone) {
@@ -1411,7 +1419,7 @@ developerScreen.addEventListener("click", (event) => {
   if (event.target.closest("#developerEditToggle")) { editMode = !editMode; renderDeveloperScreen(); }
   const holeButton = event.target.closest("[data-developer-hole]");
   if (holeButton) { selected.hole = Number(holeButton.dataset.developerHole); selected.course = selected.hole <= 9 ? "out" : "in"; editMode = false; renderDeveloperScreen(); }
-  if (event.target.closest("#startNewRound") && window.confirm("当日条件・使用クラブ・結果・メモを全18ホール分リセットします。新しいラウンドを開始しますか？")) { resetRoundForNewPlay(); renderDeveloperScreen(); }
+  if (event.target.closest("#startNewRound") && window.confirm("当日条件・使用クラブ・結果・メモを全18ホール分リセットします。新しいラウンドを開始しますか？")) { resetRoundForNewPlay(); renderCurrentPlayState(); renderDeveloperScreen(); }
   if (event.target.closest("#exportData")) exportCourseData();
 });
 developerScreen.addEventListener("submit", (event) => {
@@ -1462,6 +1470,7 @@ developerScreen.addEventListener("change", async (event) => {
     backupImportStatus = "error";
     backupImportMessage = `読み込みに失敗しました：${error instanceof Error ? error.message : "ファイルを確認してください。"}`;
   }
+  renderCurrentPlayState();
   renderDeveloperScreen();
 });
 teeSelector.addEventListener("click", (event) => {
@@ -1590,7 +1599,7 @@ strategyCard.addEventListener("change", async (event) => {
     const result = await importCourseData(input.files[0]);
     backupImportStatus = "success";
     backupImportMessage = `${result.totalHoles}ホール中${result.matchedHoles}ホールを読み込み、実戦記録${result.restoredRoundRecords}件を復元しました。`;
-    renderStrategy();
+    renderCurrentPlayState();
   } catch (error) {
     backupImportStatus = "error";
     backupImportMessage = `読み込みに失敗しました：${error instanceof Error ? error.message : "ファイルを確認してください。"}`;
