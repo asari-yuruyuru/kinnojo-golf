@@ -1,5 +1,5 @@
 // アプリ本体を更新したときだけ末尾の版番号を変更します。
-const CACHE_NAME = "golf-strategy-beta-v5";
+const CACHE_NAME = "golf-strategy-beta-v7";
 const APP_SHELL = [
   "./",
   "./index.html",

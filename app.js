@@ -369,6 +369,8 @@ let osmGeoJsonText = "";
 let todayEditMode = false;
 let backupImportMessage = null;
 let backupImportStatus = null;
+// 画面上の入力内容が明示保存済みかを示す一時状態です。保存データの形式は変えません。
+const dirtyRecordHoles = new Set();
 const storageKeyFor = (course) => `golf-tee-strategy:${course.id}:landing-zones`;
 const coursePicker = document.querySelector("#coursePicker");
 const courseSelector = document.querySelector("#courseSelector");
@@ -386,6 +388,28 @@ function holeByNumber(number) {
 
 function experienceForHole(hole) {
   return roundExperienceByCourse[courseData.id]?.[hole.holeNumber] ?? {};
+}
+
+function recordStateKey(holeNumber) {
+  return `${courseData.id}:${holeNumber}`;
+}
+
+function setRecordSaveButton(button, saved) {
+  if (!button) return;
+  button.classList.toggle("is-saved", saved);
+  button.textContent = saved ? "✓ 保存済み" : "このホールを保存";
+}
+
+function markRecordDirty(holeNumber) {
+  dirtyRecordHoles.add(recordStateKey(holeNumber));
+  setRecordSaveButton(strategyCard.querySelector(`.compact-record-form[data-hole="${holeNumber}"] .compact-save`), false);
+}
+
+function todayAdjustmentMatchesRecord(hole, record) {
+  const current = normalizedTodayAdjustment(hole);
+  const recorded = record.todayConditions ?? {};
+  return ["windDirection", "windStrength", "teePosition", "teeDistanceOffset", "ground", "leftHazardDistance", "rightHazardDistance", "frontHazardDistance", "memo"]
+    .every((key) => (current[key] ?? null) === (recorded[key] ?? null));
 }
 
 function statusValue(value, suffix = "") {
@@ -1389,6 +1413,7 @@ function renderCompactHoleCard(hole) {
   const savedSummary = record.recordedAt || record.firstPuttDistance != null
     ? `<span class="compact-saved">保存済み${record.actualClubName ? `：${escapeHtml(record.actualClubName)}` : ""}${savedResult ? ` / ${savedResult}` : ""}${record.firstPuttDistance != null ? ` / 1st ${record.firstPuttDistance}m` : ""}</span>`
     : "";
+  const isSaved = Boolean(record.recordedAt) && todayAdjustmentMatchesRecord(hole, record) && !dirtyRecordHoles.has(recordStateKey(hole.holeNumber));
   return `<article class="compact-hole-card" id="hole-${hole.holeNumber}">
     <header class="compact-hole-header"><div><strong>${hole.holeNumber}</strong><span>HOLE</span></div><p>PAR ${hole.par ?? "―"}<b>${distance ?? "―"}<small>yd</small></b></p></header>
     <div class="compact-strategy">${primary ? `<div class="compact-primary"><span>安全推奨</span><strong>${primary.club.name}</strong></div>${aggressive ? `<div class="compact-aggressive"><span>攻めるなら</span><strong>${aggressive.club.name}</strong></div>` : ""}` : `<div class="compact-par3"><span>PAR3</span><strong>戦略判定対象外</strong></div>`}</div>
@@ -1398,7 +1423,7 @@ function renderCompactHoleCard(hole) {
       <div class="compact-input-grid"><label>使用クラブ<select name="actualClub">${compactSelectOptions(clubOptions, record.actualClubId, "選択")}</select></label><label>結果<select name="shotResult">${compactSelectOptions(resultOptions, record.shotResult, "選択")}</select></label><label>1stパット距離<input name="firstPuttDistance" type="number" inputmode="decimal" min="0" step="0.1" value="${inputValue(record.firstPuttDistance)}" placeholder="m" /></label></div>
       <label class="compact-other-club" ${record.actualClubId === "other" ? "" : "hidden"}>その他のクラブ<input name="otherClub" value="${escapeHtml(record.otherClubName ?? "")}" /></label>
       <details class="compact-memo" ${record.resultMemo ? "open" : ""}><summary>メモ${record.resultMemo ? "（入力済み）" : "（任意）"}</summary><textarea name="shotResultMemo" rows="2" placeholder="判断理由や実戦で気づいたこと">${escapeHtml(record.resultMemo ?? "")}</textarea></details>
-      <button class="compact-save" type="submit">このホールを保存</button>${savedSummary}
+      <button class="compact-save ${isSaved ? "is-saved" : ""}" type="submit">${isSaved ? "✓ 保存済み" : "このホールを保存"}</button>${savedSummary}
     </form>
     ${renderTodayAdjustment(hole, recommendation)}
   </article>`;
@@ -1409,8 +1434,10 @@ function renderStrategy() {
   const min = isOut ? 1 : 10;
   const max = isOut ? 9 : 18;
   const holes = courseData.holes.filter((hole) => hole.holeNumber >= min && hole.holeNumber <= max);
+  const nextSide = isOut ? "in" : "out";
+  const switchLabel = isOut ? "INへ →" : "← OUTへ";
   strategyCard.innerHTML = holes.length
-    ? `<div class="nine-hole-list">${holes.map(renderCompactHoleCard).join("")}</div>`
+    ? `<div class="nine-hole-list">${holes.map(renderCompactHoleCard).join("")}<div class="nine-hole-switch"><button type="button" data-nine-switch="${nextSide}">${switchLabel}</button></div></div>`
     : `<div class="pending-card"><h3>${selected.course.toUpperCase()}</h3><p>このコースのホールデータはまだ登録されていません。</p></div>`;
 }
 
@@ -1430,6 +1457,18 @@ courseSelector.addEventListener("click", (event) => {
   const button = event.target.closest("[data-course]");
   if (!button) return;
   selectHole(button.dataset.course === "out" ? 1 : 10);
+});
+function switchNineHoles(course) {
+  selectHole(course === "in" ? 10 : 1);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: Math.max(0, strategyCard.offsetTop - 8), behavior: "auto" });
+    });
+  });
+}
+strategyCard.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-nine-switch]");
+  if (button) switchNineHoles(button.dataset.nineSwitch);
 });
 coursePicker.addEventListener("change", (event) => {
   const nextCourse = courseCatalog.find((item) => item.id === event.target.value);
@@ -1612,6 +1651,7 @@ strategyCard.addEventListener("submit", (event) => {
     memo: form.querySelector('[name="todayMemo"]').value.trim() || null,
   };
   saveLandingZones();
+  markRecordDirty(hole.holeNumber);
   todayEditMode = false;
   renderStrategy();
 });
@@ -1652,6 +1692,7 @@ strategyCard.addEventListener("submit", (event) => {
     recordedAt: new Date().toISOString(),
   };
   saveLandingZones();
+  dirtyRecordHoles.delete(recordStateKey(hole.holeNumber));
   renderStrategy();
 });
 strategyCard.addEventListener("change", (event) => {
@@ -1659,6 +1700,14 @@ strategyCard.addEventListener("change", (event) => {
   const form = event.target.closest(".compact-record-form");
   const other = form?.querySelector(".compact-other-club");
   if (other) other.hidden = event.target.value !== "other";
+});
+strategyCard.addEventListener("input", (event) => {
+  const form = event.target.closest(".compact-record-form, .today-adjustment-form");
+  if (form?.dataset.hole) markRecordDirty(Number(form.dataset.hole));
+});
+strategyCard.addEventListener("change", (event) => {
+  const form = event.target.closest(".compact-record-form, .today-adjustment-form");
+  if (form?.dataset.hole) markRecordDirty(Number(form.dataset.hole));
 });
 strategyCard.addEventListener("click", (event) => {
   if (event.target.closest("#exportData")) exportCourseData();

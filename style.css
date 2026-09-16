@@ -143,10 +143,13 @@ h2 { margin: 0 0 11px; font-size: 1rem; }
 .compact-memo summary { min-height: 42px; display: flex; align-items: center; color: var(--muted); cursor: pointer; font-size: .78rem; font-weight: 800; }
 .compact-memo textarea { width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #0c2a23; color: var(--ink); font: inherit; resize: vertical; }
 .compact-save { width: 100%; min-height: 48px; margin-top: 9px; border: 0; border-radius: 11px; background: #74d693; color: #163247; font: inherit; font-size: .92rem; font-weight: 900; }
+.compact-save.is-saved { border: 1px solid rgb(116 214 147 / 48%); background: rgb(116 214 147 / 16%); color: #bceecb; }
 .compact-saved { display: block; margin-top: 8px; color: #a9edbd; font-size: .72rem; font-weight: 800; text-align: center; }
 .compact-hole-card > .today-adjustment { margin: 0; padding: 12px 15px; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: rgb(72 127 189 / 6%); }
 .compact-hole-card > .today-adjustment summary span { font-size: .88rem; }
 .compact-hole-card > .today-adjustment summary b { font-size: .68rem; }
+.nine-hole-switch { padding: 2px 0 8px; }
+.nine-hole-switch button { width: 100%; min-height: 62px; border: 1px solid var(--amber); border-radius: 16px; background: var(--amber); color: #17342c; font: inherit; font-size: 1.08rem; font-weight: 900; cursor: pointer; }
 @media (max-width: 370px) {
   .compact-input-grid { grid-template-columns: 1fr 1fr; }
   .compact-input-grid label:last-child { grid-column: 1 / -1; }
