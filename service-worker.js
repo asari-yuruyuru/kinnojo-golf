@@ -1,5 +1,5 @@
 // アプリ本体を更新したときだけ末尾の版番号を変更します。
-const CACHE_NAME = "kinnojo-golf-beta-v4";
+const CACHE_NAME = "golf-strategy-beta-v5";
 const APP_SHELL = [
   "./",
   "./index.html",

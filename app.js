@@ -69,7 +69,7 @@ const wholeHoleWeights = Object.freeze({
 });
 
 // 利用者が今回確認した実戦上の条件。クラブの正解値や架空の距離は含めない。
-const roundExperience = {
+const kinnojoRoundExperience = {
   12: { shortLayupBlocksNextShot: true, source: "利用者の実戦評価" },
   13: { landingWidthNotSeverelyNarrow: true, source: "利用者の実戦評価" },
   17: { separateShortcut: true, source: "利用者の実戦評価" },
@@ -138,7 +138,7 @@ function createUnconfirmedHole(holeNumber, par, regularYardage) {
 }
 
 // ゴルフ場・ホール固有の情報。未確認・未計測の値は推測せず null のまま保持します。
-const courseData = {
+let courseData = {
   id: "kinnojo-out",
   courseName: "鬼ノ城ゴルフ倶楽部",
   tees: [
@@ -355,7 +355,11 @@ const courseData = {
   ],
 };
 
-const selected = { hole: 1, tee: "regular", course: "out" };
+// コースを追加するときは、この配列へ同じ構造のコースを登録します。
+// 既存の鬼ノ城IDはlocalStorageとの互換性のため変更しません。
+const courseCatalog = [courseData];
+const roundExperienceByCourse = { "kinnojo-out": kinnojoRoundExperience };
+const selected = { courseId: courseData.id, hole: 1, tee: "regular", course: "out" };
 let editMode = false;
 let mapImportPreview = null;
 let mapImportError = null;
@@ -365,7 +369,8 @@ let osmGeoJsonText = "";
 let todayEditMode = false;
 let backupImportMessage = null;
 let backupImportStatus = null;
-const storageKey = `golf-tee-strategy:${courseData.id}:landing-zones`;
+const storageKeyFor = (course) => `golf-tee-strategy:${course.id}:landing-zones`;
+const coursePicker = document.querySelector("#coursePicker");
 const courseSelector = document.querySelector("#courseSelector");
 const holeSelector = document.querySelector("#holeSelector");
 const teeSelector = document.querySelector("#teeSelector");
@@ -377,6 +382,10 @@ const bottomNav = document.querySelector(".bottom-nav");
 
 function holeByNumber(number) {
   return courseData.holes.find((hole) => hole.holeNumber === number);
+}
+
+function experienceForHole(hole) {
+  return roundExperienceByCourse[courseData.id]?.[hole.holeNumber] ?? {};
 }
 
 function statusValue(value, suffix = "") {
@@ -407,27 +416,37 @@ function normalizeLandingZone(raw) {
   };
 }
 
-function loadSavedLandingZones() {
+function normalizeRoundRecord(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const rawDistance = record.firstPuttDistance;
+  const firstPuttDistance = rawDistance === null || rawDistance === undefined || rawDistance === "" ? null : Number(rawDistance);
+  return { ...record, firstPuttDistance: Number.isFinite(firstPuttDistance) && firstPuttDistance >= 0 ? firstPuttDistance : null };
+}
+
+function loadSavedLandingZones(targetCourse = courseData) {
   try {
-    const saved = JSON.parse(localStorage.getItem(storageKey));
+    const saved = JSON.parse(localStorage.getItem(storageKeyFor(targetCourse)));
     if (!saved || typeof saved !== "object") return;
     const savedHoles = saved.course?.holes ?? saved;
-    courseData.holes.forEach((hole) => {
+    targetCourse.holes.forEach((hole) => {
       const savedHole = Array.isArray(savedHoles[hole.holeNumber]) ? { landingZones: savedHoles[hole.holeNumber] } : savedHoles.find?.((item) => item.holeNumber === hole.holeNumber);
-      if (!savedHole?.landingZones) return;
-      Object.assign(hole, savedHole, { landingZones: savedHole.landingZones.map(normalizeLandingZone) });
+      if (!savedHole) return;
+      const normalized = { ...savedHole };
+      if (Array.isArray(savedHole.landingZones)) normalized.landingZones = savedHole.landingZones.map(normalizeLandingZone);
+      if (savedHole.roundRecord) normalized.roundRecord = normalizeRoundRecord(savedHole.roundRecord);
+      Object.assign(hole, normalized);
     });
   } catch {
     // 壊れた保存データは読み込まず、初期の null データを使います。
   }
 }
 
-function saveLandingZones() {
-  localStorage.setItem(storageKey, JSON.stringify({ version: 2, course: courseData }));
+function saveLandingZones(targetCourse = courseData) {
+  localStorage.setItem(storageKeyFor(targetCourse), JSON.stringify({ version: 3, course: targetCourse }));
 }
 
 function exportCourseData() {
-  const backup = { format: "golf-tee-strategy-backup", version: 2, exportedAt: new Date().toISOString(), course: courseData };
+  const backup = { format: "golf-tee-strategy-backup", version: 3, exportedAt: new Date().toISOString(), activeCourseId: courseData.id, courses: courseCatalog, course: courseData };
   const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
   const link = document.createElement("a");
   link.href = url;
@@ -443,13 +462,16 @@ async function importCourseData(file) {
   } catch {
     throw new Error("JSONの形式が正しくありません。");
   }
-  const importedHoles = backup?.course?.holes;
-  if (!Array.isArray(importedHoles)) throw new Error("読み込めるコースデータが見つかりません。");
-
-  const matched = importedHoles
-    .filter((importedHole) => importedHole && typeof importedHole === "object")
-    .map((importedHole) => ({ importedHole, hole: holeByNumber(Number(importedHole.holeNumber)) }))
-    .filter(({ hole }) => Boolean(hole));
+  const importedCourses = Array.isArray(backup?.courses) ? backup.courses : backup?.course ? [backup.course] : [];
+  if (!importedCourses.length) throw new Error("読み込めるコースデータが見つかりません。");
+  const matched = importedCourses.flatMap((importedCourse) => {
+    const targetCourse = courseCatalog.find((item) => item.id === importedCourse?.id) ?? (importedCourses.length === 1 ? courseData : null);
+    if (!targetCourse || !Array.isArray(importedCourse?.holes)) return [];
+    return importedCourse.holes
+      .filter((importedHole) => importedHole && typeof importedHole === "object")
+      .map((importedHole) => ({ importedHole, targetCourse, hole: targetCourse.holes.find((item) => item.holeNumber === Number(importedHole.holeNumber)) }))
+      .filter(({ hole }) => Boolean(hole));
+  });
   if (matched.length === 0) throw new Error("現在のコースに一致するホール番号がありません。");
 
   const previousValues = matched.map(({ hole }) => ({
@@ -490,13 +512,13 @@ async function importCourseData(file) {
       hole.todayAdjustment = { ...hole.todayAdjustment, ...importedHole.todayAdjustment };
     }
     if (importedHole.roundRecord && typeof importedHole.roundRecord === "object" && !Array.isArray(importedHole.roundRecord)) {
-      hole.roundRecord = { ...importedHole.roundRecord };
+      hole.roundRecord = normalizeRoundRecord(importedHole.roundRecord);
       restoredRoundRecords += 1;
     }
   });
 
   try {
-    saveLandingZones();
+    [...new Set(matched.map(({ targetCourse }) => targetCourse))].forEach((targetCourse) => saveLandingZones(targetCourse));
   } catch {
     previousValues.forEach(({ hole, landingZones, mapData, todayAdjustment, roundRecord }) => {
       hole.landingZones = landingZones;
@@ -508,11 +530,12 @@ async function importCourseData(file) {
     throw new Error("端末への保存に失敗しました。空き容量を確認してください。");
   }
 
-  return { totalHoles: importedHoles.length, matchedHoles: matched.length, restoredRoundRecords };
+  const totalHoles = importedCourses.reduce((sum, item) => sum + (Array.isArray(item?.holes) ? item.holes.length : 0), 0);
+  return { totalHoles, matchedHoles: matched.length, restoredRoundRecords };
 }
 
 function nullableNumber(value) {
-  return value === "" ? null : Number(value);
+  return value === "" || value === null || value === undefined ? null : Number(value);
 }
 
 function nullableBoolean(value) {
@@ -812,7 +835,7 @@ function showVerificationScreen(show) {
   playSurface.hidden = show;
   developerScreen.hidden = true;
   verificationScreen.hidden = !show;
-  bottomNav.hidden = show;
+  bottomNav.hidden = true;
   if (show) renderVerificationScreen();
 }
 
@@ -861,7 +884,7 @@ function renderRoundVerification() {
     const conditions = record.todayConditions ?? {};
     const conditionText = [conditions.windDirection && `風:${todayLabel("windDirection", conditions.windDirection)}`, conditions.windStrength && `強さ:${todayLabel("windStrength", conditions.windStrength)}`, conditions.teePosition && `ティー:${todayLabel("teePosition", conditions.teePosition)}`, conditions.teeDistanceOffset != null && `基準差:${conditions.teeDistanceOffset > 0 ? "+" : ""}${conditions.teeDistanceOffset}yd`, conditions.ground && `地面:${todayLabel("ground", conditions.ground)}`].filter(Boolean).join(" / ") || "未入力";
     const courseName = hole.holeNumber <= 9 ? "OUT" : "IN";
-    return `<article class="round-record-row"><h3>${courseName} ${hole.holeNumber} <span>PAR ${hole.par} / ${hole.regularYardage ?? "―"}yd</span></h3><p>基本：${clubName(record.preRoundPrimaryClub)}　攻め：${record.preRoundAggressiveClub ? clubName(record.preRoundAggressiveClub) : "―"}　当日：${clubName(record.todayPrimaryClub)}</p><p>実際：${escapeHtml(record.actualClubName ?? "未入力")}　結果：${resultLabel[record.shotResult] ?? "未入力"}</p><p class="round-meta">条件：${escapeHtml(conditionText)}　事前一致：${record.preRoundMatched == null ? "―" : record.preRoundMatched ? "○" : "×"}　当日一致：${record.todayMatched == null ? "―" : record.todayMatched ? "○" : "×"}</p>${record.memo ? `<p class="round-meta">状況メモ：${escapeHtml(record.memo)}</p>` : ""}${record.resultMemo ? `<p class="round-meta">結果メモ：${escapeHtml(record.resultMemo)}</p>` : ""}</article>`;
+    return `<article class="round-record-row"><h3>${courseName} ${hole.holeNumber} <span>PAR ${hole.par} / ${hole.regularYardage ?? "―"}yd</span></h3><p>基本：${clubName(record.preRoundPrimaryClub)}　攻め：${record.preRoundAggressiveClub ? clubName(record.preRoundAggressiveClub) : "―"}　当日：${clubName(record.todayPrimaryClub)}</p><p>実際：${escapeHtml(record.actualClubName ?? "未入力")}　結果：${resultLabel[record.shotResult] ?? "未入力"}　1stパット：${record.firstPuttDistance ?? "―"}${record.firstPuttDistance != null ? "m" : ""}</p><p class="round-meta">条件：${escapeHtml(conditionText)}　事前一致：${record.preRoundMatched == null ? "―" : record.preRoundMatched ? "○" : "×"}　当日一致：${record.todayMatched == null ? "―" : record.todayMatched ? "○" : "×"}</p>${record.memo ? `<p class="round-meta">状況メモ：${escapeHtml(record.memo)}</p>` : ""}${record.resultMemo ? `<p class="round-meta">結果メモ：${escapeHtml(record.resultMemo)}</p>` : ""}</article>`;
   }).join("");
   return `<section class="round-verification"><h2>ラウンド検証結果</h2><p>OUT / IN 18ホールを一覧表示します。集計は学習ロジックには反映しません。</p><div class="round-summary"><div><span>記録済み</span><b>${recorded.length} / 18</b></div><div><span>事前推奨一致率</span><b>${percentage(preCompared, "preRoundMatched")}</b></div><div><span>当日推奨一致率</span><b>${percentage(todayCompared, "todayMatched")}</b></div><div><span>FW</span><b>${counts.fw}</b></div><div><span>左ミス / 右ミス</span><b>${counts.left} / ${counts.right}</b></div><div><span>OB</span><b>${counts.ob}</b></div></div><div>${records}</div></section>`;
 }
@@ -886,7 +909,7 @@ function showDeveloperScreen(show) {
   playSurface.hidden = show;
   verificationScreen.hidden = true;
   developerScreen.hidden = !show;
-  bottomNav.hidden = show;
+  bottomNav.hidden = true;
   if (show) renderDeveloperScreen();
   else renderCurrentPlayState();
 }
@@ -1092,7 +1115,7 @@ function renderTodayAdjustment(hole, preRecommendation = null) {
   const today = evaluateTodayRecommendation(hole, preRecommendation);
   const hasTodayInput = [adjustment.windDirection, adjustment.windStrength, adjustment.teePosition, adjustment.teeDistanceOffset, adjustment.ground, adjustment.leftHazardDistance, adjustment.rightHazardDistance, adjustment.frontHazardDistance, adjustment.memo].some((value) => value != null);
   const summary = [adjustment.windDirection && `風：${todayLabel("windDirection", adjustment.windDirection)}`, adjustment.windStrength && `強さ：${todayLabel("windStrength", adjustment.windStrength)}`, adjustment.teePosition && `ティー：${todayLabel("teePosition", adjustment.teePosition)}`, adjustment.teeDistanceOffset != null && `基準差：${adjustment.teeDistanceOffset > 0 ? "+" : ""}${adjustment.teeDistanceOffset}yd`, adjustment.ground && `地面：${todayLabel("ground", adjustment.ground)}`].filter(Boolean);
-  return `<details class="today-adjustment" ${hasTodayInput ? "open" : ""}><summary><span><small>ON COURSE</small>今日の状況</span><b>${hasTodayInput ? "入力済み" : "タップして入力"}</b></summary><form id="todayAdjustmentForm">
+  return `<details class="today-adjustment compact-detail"><summary><span><small>OPTION</small>詳細記録</span><b>${hasTodayInput ? "入力済み" : "必要な時だけ"}</b></summary><form class="today-adjustment-form" data-hole="${hole.holeNumber}">
       ${renderTodayChoices("windDirection", "風", adjustment.windDirection)}
       ${renderTodayChoices("windStrength", "風の強さ", adjustment.windStrength)}
       ${renderTodayChoices("teePosition", "ティー位置", adjustment.teePosition)}
@@ -1184,7 +1207,7 @@ function conciseRecommendationReasons(hole, candidate, primary) {
 function evaluatePersonalizedClub(hole, club) {
   const base = evaluateTeeRiskClub(hole, club);
   const weights = wholeHoleWeights;
-  const experience = roundExperience[hole.holeNumber] ?? {};
+  const experience = experienceForHole(hole);
   const total = (club.totalYards.min + club.totalYards.max) / 2;
   const remainingDistance = Number.isFinite(hole.regularYardage) ? Math.max(0, hole.regularYardage - total) : null;
   const shortHole = hole.par === 4 && clubData.some(c => ["5w", "3u", "4u"].includes(c.id) && hole.regularYardage - c.totalYards.min <= 100);
@@ -1214,9 +1237,9 @@ function evaluatePersonalizedRecommendation(hole) {
   const aggressiveOption = evaluations.filter(item => item.club.carryYards > primary.club.carryYards && (item.safe || item.caution)).sort((a,b) => a.club.carryYards - b.club.carryYards)[0] ?? null;
   const secondary = aggressiveOption ?? ranked.find(item => item !== primary && item.safe) ?? ranked.find(item => item !== primary);
   const avoid = evaluations.find((item) => item.status === "非推奨") ?? null;
-  primary.reasons = [hole.par === 4 ? `想定残り約${Math.round(primary.remainingDistance)}yd` : "次打距離と重大リスクのバランス", ...(roundExperience[hole.holeNumber]?.separateShortcut ? ["基本は折れ曲がりへの安全ルート"] : []), ...conciseRecommendationReasons(hole, primary, primary)].slice(0, 3);
+  primary.reasons = [hole.par === 4 ? `想定残り約${Math.round(primary.remainingDistance)}yd` : "次打距離と重大リスクのバランス", ...(experienceForHole(hole).separateShortcut ? ["基本は折れ曲がりへの安全ルート"] : []), ...conciseRecommendationReasons(hole, primary, primary)].slice(0, 3);
   if (secondary) secondary.reasons = conciseRecommendationReasons(hole, secondary, primary);
-  if (aggressiveOption) aggressiveOption.conditions = roundExperience[hole.holeNumber]?.separateShortcut ? ["バンカー越えのCarryと安全ルートを当日確認"] : ["左右の着弾幅とハザード距離を当日確認"];
+  if (aggressiveOption) aggressiveOption.conditions = experienceForHole(hole).separateShortcut ? ["バンカー越えのCarryと安全ルートを当日確認"] : ["左右の着弾幅とハザード距離を当日確認"];
   return { primary, secondary, primaryRecommendation: primary, aggressiveOption, avoid, evaluations };
 }
 
@@ -1236,7 +1259,7 @@ function renderTacticalPlay(hole) {
   const assessmentDetail = assessments.map((item) => `<div><span>${item.club.name}</span><b>${item.grade}</b></div>`).join("");
   const primary = recommendation.primaryRecommendation;
   const aggressive = recommendation.aggressiveOption;
-  const aggressiveDescription = roundExperience[hole.holeNumber]?.separateShortcut ? "リスクを取ってショートカットを狙う" : "リスクを許容して距離を稼ぐ";
+  const aggressiveDescription = experienceForHole(hole).separateShortcut ? "リスクを取ってショートカットを狙う" : "リスクを許容して距離を稼ぐ";
   return `<section class="tactical-play" aria-label="実戦用ティーショット判断">
     <section class="pre-recommendation"><div class="tactical-heading"><span>事前戦略</span><b>信頼度：${confidenceLabel[hole.strategyConfidence] ?? "低"}</b></div><div class="pre-strategies"><article class="strategy-option strategy-option-primary"><span>推奨クラブ</span><strong>${primary.club.name}</strong><p>安全性・残り距離・ホール攻略を総合した基本戦略</p></article>${aggressive ? `<article class="strategy-option strategy-option-aggressive"><span>攻めるなら</span><strong>${aggressive.club.name}</strong><p>${aggressiveDescription}</p>${aggressive.conditions?.length ? `<small>${aggressive.conditions.map(escapeHtml).join("・")}</small>` : ""}</article>` : ""}<div class="strategy-avoid"><span>注意 / 非推奨</span><strong>${recommendation.avoid?.club.name ?? "なし"}</strong></div></div><p class="pre-reason"><b>推奨理由：</b>${primary.reasons.map(escapeHtml).join("・")}</p><p>当日の距離・風・目視で最終判断してください。</p></section>
     <section class="tactical-card"><h2>主要リスク</h2><div class="risk-chips">${brief.risks.map((risk) => `<span>${escapeHtml(risk)}</span>`).join("")}</div></section>
@@ -1323,14 +1346,16 @@ function renderPar3Notice() {
 function renderSelectors() {
   const isOut = selected.course === "out";
   const firstHole = isOut ? 1 : 10;
+  coursePicker.innerHTML = courseCatalog.map((course) => `<option value="${escapeHtml(course.id)}" ${course.id === courseData.id ? "selected" : ""}>${escapeHtml(course.courseName)}</option>`).join("");
   courseSelector.innerHTML = ["out", "in"].map((course) => `<button type="button" data-course="${course}" aria-pressed="${selected.course === course}">${course.toUpperCase()}</button>`).join("");
   holeSelector.innerHTML = Array.from({ length: 9 }, (_, index) => {
     const number = firstHole + index;
     const isSelected = selected.hole === number;
     return `<button class="hole-button" type="button" aria-pressed="${isSelected}" data-hole="${number}">${number}</button>`;
   }).join("");
+  document.querySelector("#courseTitle").textContent = courseData.courseName;
   document.querySelector("#courseLabel").textContent = `${selected.course.toUpperCase()} COURSE`;
-  document.querySelector("#holeProgress").textContent = `${selected.course.toUpperCase()} ${selected.hole} / ${isOut ? 9 : 18}`;
+  document.querySelector("#holeProgress").textContent = `${selected.course.toUpperCase()} 9ホール`;
   const previousButton = document.querySelector("#previousButton");
   const nextButton = document.querySelector("#nextButton");
   previousButton.disabled = selected.hole === 1;
@@ -1342,28 +1367,51 @@ function renderSelectors() {
   `).join("");
 }
 
+function compactRiskText(hole) {
+  const risks = hole.tacticalBrief?.risks?.filter(Boolean) ?? [];
+  if (risks.length) return risks.slice(0, 2).join("／");
+  return hole.mainRisk ?? hole.mainRisks ?? "未確認";
+}
+
+function compactSelectOptions(options, currentValue, emptyLabel) {
+  return `<option value="">${emptyLabel}</option>${options.map(([value, label]) => `<option value="${value}" ${currentValue === value ? "selected" : ""}>${label}</option>`).join("")}`;
+}
+
+function renderCompactHoleCard(hole) {
+  const record = normalizeRoundRecord(hole.roundRecord) ?? {};
+  const recommendation = hole.par === 3 ? null : evaluatePersonalizedRecommendation(hole);
+  const primary = recommendation?.primaryRecommendation;
+  const aggressive = recommendation?.aggressiveOption;
+  const clubOptions = [...clubData.map((club) => [club.id, club.name]), ["other", "その他"]];
+  const resultOptions = [["fw", "FW"], ["left", "左"], ["right", "右"], ["ob-left", "OB左"], ["ob-right", "OB右"], ["other", "その他"]];
+  const distance = hole.tees?.[selected.tee]?.distanceYards ?? hole.regularYardage ?? null;
+  const savedResult = resultOptions.find(([id]) => id === record.shotResult)?.[1] ?? "";
+  const savedSummary = record.recordedAt || record.firstPuttDistance != null
+    ? `<span class="compact-saved">保存済み${record.actualClubName ? `：${escapeHtml(record.actualClubName)}` : ""}${savedResult ? ` / ${savedResult}` : ""}${record.firstPuttDistance != null ? ` / 1st ${record.firstPuttDistance}m` : ""}</span>`
+    : "";
+  return `<article class="compact-hole-card" id="hole-${hole.holeNumber}">
+    <header class="compact-hole-header"><div><strong>${hole.holeNumber}</strong><span>HOLE</span></div><p>PAR ${hole.par ?? "―"}<b>${distance ?? "―"}<small>yd</small></b></p></header>
+    <div class="compact-strategy">${primary ? `<div class="compact-primary"><span>安全推奨</span><strong>${primary.club.name}</strong></div>${aggressive ? `<div class="compact-aggressive"><span>攻めるなら</span><strong>${aggressive.club.name}</strong></div>` : ""}` : `<div class="compact-par3"><span>PAR3</span><strong>戦略判定対象外</strong></div>`}</div>
+    <p class="compact-risk"><b>注意：</b>${escapeHtml(compactRiskText(hole))}</p>
+    ${primary?.reasons?.length ? `<ul class="compact-reasons">${primary.reasons.slice(0, 2).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>` : ""}
+    <form class="compact-record-form" data-hole="${hole.holeNumber}">
+      <div class="compact-input-grid"><label>使用クラブ<select name="actualClub">${compactSelectOptions(clubOptions, record.actualClubId, "選択")}</select></label><label>結果<select name="shotResult">${compactSelectOptions(resultOptions, record.shotResult, "選択")}</select></label><label>1stパット距離<input name="firstPuttDistance" type="number" inputmode="decimal" min="0" step="0.1" value="${inputValue(record.firstPuttDistance)}" placeholder="m" /></label></div>
+      <label class="compact-other-club" ${record.actualClubId === "other" ? "" : "hidden"}>その他のクラブ<input name="otherClub" value="${escapeHtml(record.otherClubName ?? "")}" /></label>
+      <details class="compact-memo" ${record.resultMemo ? "open" : ""}><summary>メモ${record.resultMemo ? "（入力済み）" : "（任意）"}</summary><textarea name="shotResultMemo" rows="2" placeholder="判断理由や実戦で気づいたこと">${escapeHtml(record.resultMemo ?? "")}</textarea></details>
+      <button class="compact-save" type="submit">このホールを保存</button>${savedSummary}
+    </form>
+    ${renderTodayAdjustment(hole, recommendation)}
+  </article>`;
+}
+
 function renderStrategy() {
-  const hole = holeByNumber(selected.hole);
-  if (!hole) {
-    strategyCard.innerHTML = `<div class="pending-card"><h3>${selected.course.toUpperCase()} ${selected.hole}番</h3><p>このホールはこれから登録します。<br>コースデータを追加すると、同じ表示形式で確認できます。</p></div>`;
-    return;
-  }
-  const tee = courseData.tees.find((item) => item.id === selected.tee);
-  const teeData = hole.tees[selected.tee];
-  const displayValue = (value) => value ?? "未確認";
-  strategyCard.innerHTML = `
-    <div class="hole-summary">
-      <div class="hole-number"><strong>${hole.holeNumber}</strong><span>HOLE</span></div>
-      <div class="par">${hole.par === null ? "PAR 未確認" : `PAR ${hole.par}`}</div>
-    </div>
-    <div class="distance"><span class="field-label">${tee.name} ティーからの距離</span><strong>${teeData?.distanceYards ?? "未確認"}</strong>${teeData?.distanceYards !== null ? "<small>yd</small>" : ""}</div>
-    <div class="course-notes">
-      <div><span class="field-label">ホール形状</span><p>${displayValue(hole.courseShape)}</p></div>
-      <div><span class="field-label">ティーショット攻略</span><p>${displayValue(hole.officialStrategy)}</p></div>
-      ${hole.par === 3 ? `<div><span class="field-label">主な危険</span><p>${displayValue(hole.mainRisks)}</p></div>` : ""}
-    </div>
-    ${hole.par === 3 ? `${renderPar3Notice()}${renderTodayAdjustment(hole)}${renderShotRecord(hole)}` : renderTacticalPlay(hole)}
-  `;
+  const isOut = selected.course === "out";
+  const min = isOut ? 1 : 10;
+  const max = isOut ? 9 : 18;
+  const holes = courseData.holes.filter((hole) => hole.holeNumber >= min && hole.holeNumber <= max);
+  strategyCard.innerHTML = holes.length
+    ? `<div class="nine-hole-list">${holes.map(renderCompactHoleCard).join("")}</div>`
+    : `<div class="pending-card"><h3>${selected.course.toUpperCase()}</h3><p>このコースのホールデータはまだ登録されていません。</p></div>`;
 }
 
 function selectHole(number) {
@@ -1382,6 +1430,14 @@ courseSelector.addEventListener("click", (event) => {
   const button = event.target.closest("[data-course]");
   if (!button) return;
   selectHole(button.dataset.course === "out" ? 1 : 10);
+});
+coursePicker.addEventListener("change", (event) => {
+  const nextCourse = courseCatalog.find((item) => item.id === event.target.value);
+  if (!nextCourse) return;
+  courseData = nextCourse;
+  selected.courseId = nextCourse.id;
+  selected.tee = nextCourse.tees[0]?.id ?? "regular";
+  selectHole(1);
 });
 document.querySelector("#settingsButton").addEventListener("click", () => showDeveloperScreen(true));
 verificationScreen.addEventListener("click", (event) => {
@@ -1535,14 +1591,14 @@ strategyCard.addEventListener("submit", (event) => {
   renderStrategy();
 });
 strategyCard.addEventListener("submit", (event) => {
-  if (event.target.id !== "todayAdjustmentForm") return;
+  if (!event.target.matches(".today-adjustment-form, #todayAdjustmentForm")) return;
   event.preventDefault();
   const form = event.target;
   const data = new FormData(form);
   const leftHazardDistance = nullableNumber(data.get("leftHazardDistance"));
   const rightHazardDistance = nullableNumber(data.get("rightHazardDistance"));
   const frontHazardDistance = nullableNumber(data.get("frontHazardDistance"));
-  const hole = holeByNumber(selected.hole);
+  const hole = holeByNumber(Number(form.dataset.hole ?? selected.hole));
   hole.todayAdjustment = {
     windDirection: data.get("windDirection") || null,
     windStrength: data.get("windStrength") || null,
@@ -1560,17 +1616,19 @@ strategyCard.addEventListener("submit", (event) => {
   renderStrategy();
 });
 strategyCard.addEventListener("submit", (event) => {
-  if (event.target.id !== "shotRecordForm") return;
+  if (!event.target.matches(".compact-record-form, #shotRecordForm")) return;
   event.preventDefault();
-  const hole = holeByNumber(selected.hole);
   const form = event.target;
+  const hole = holeByNumber(Number(form.dataset.hole ?? selected.hole));
   const data = new FormData(form);
   const actualClubId = data.get("actualClub") || null;
   const otherClubName = String(data.get("otherClub") ?? "").trim() || null;
   const pre = hole.par === 3 ? null : evaluatePersonalizedRecommendation(hole);
   const today = evaluateTodayRecommendation(hole, pre);
   const actualClubName = actualClubId === "other" ? otherClubName || "その他" : clubData.find((club) => club.id === actualClubId)?.name ?? null;
+  const previousRecord = normalizeRoundRecord(hole.roundRecord) ?? {};
   hole.roundRecord = {
+    ...previousRecord,
     holeNumber: hole.holeNumber,
     par: hole.par,
     distanceYards: hole.tees[selected.tee]?.distanceYards ?? null,
@@ -1590,10 +1648,17 @@ strategyCard.addEventListener("submit", (event) => {
     todayMatched: today.primary && actualClubId && actualClubId !== "other" ? actualClubId === today.primary.club.id : null,
     memo: normalizedTodayAdjustment(hole).memo,
     resultMemo: String(data.get("shotResultMemo") ?? "").trim() || null,
+    firstPuttDistance: nullableNumber(data.get("firstPuttDistance")),
     recordedAt: new Date().toISOString(),
   };
   saveLandingZones();
   renderStrategy();
+});
+strategyCard.addEventListener("change", (event) => {
+  if (event.target.name !== "actualClub") return;
+  const form = event.target.closest(".compact-record-form");
+  const other = form?.querySelector(".compact-other-club");
+  if (other) other.hidden = event.target.value !== "other";
 });
 strategyCard.addEventListener("click", (event) => {
   if (event.target.closest("#exportData")) exportCourseData();
@@ -1615,6 +1680,6 @@ strategyCard.addEventListener("change", async (event) => {
 document.querySelector("#previousButton").addEventListener("click", () => selectHole(selected.hole - 1));
 document.querySelector("#nextButton").addEventListener("click", () => selectHole(selected.hole + 1));
 
-loadSavedLandingZones();
+courseCatalog.forEach((course) => loadSavedLandingZones(course));
 renderSelectors();
 renderStrategy();

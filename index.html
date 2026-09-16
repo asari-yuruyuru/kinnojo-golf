@@ -6,8 +6,8 @@
     <meta name="theme-color" content="#102d26" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="鬼ノ城ゴルフ" />
-    <title>鬼ノ城ゴルフ倶楽部｜ティーショット戦略</title>
+    <meta name="apple-mobile-web-app-title" content="ゴルフ戦略" />
+    <title>ゴルフ ティーショット戦略</title>
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
     <link rel="stylesheet" href="style.css" />
@@ -16,7 +16,10 @@
     <main class="app-shell">
       <header class="app-header">
         <p class="eyebrow">TEE SHOT STRATEGY</p>
-        <h1>鬼ノ城ゴルフ倶楽部</h1>
+        <h1 id="courseTitle">鬼ノ城ゴルフ倶楽部</h1>
+        <label class="course-picker-label">コース選択
+          <select id="coursePicker" aria-label="ゴルフコース選択"></select>
+        </label>
         <p id="courseLabel" class="course-label">OUT COURSE</p>
         <button id="settingsButton" class="data-verification-button" type="button">設定 / 開発</button>
       </header>
@@ -25,10 +28,10 @@
       <section class="control-section" aria-labelledby="hole-selector-title">
         <div id="courseSelector" class="course-selector" role="group" aria-label="OUT・INコース切り替え"></div>
         <div class="section-heading">
-          <h2 id="hole-selector-title">ホールを選ぶ</h2>
-          <span id="holeProgress" class="progress-label">OUT 1 / 9</span>
+          <h2 id="hole-selector-title">9ホール戦略一覧</h2>
+          <span id="holeProgress" class="progress-label">OUT 9ホール</span>
         </div>
-        <div id="holeSelector" class="hole-selector" role="group" aria-label="ホール選択"></div>
+        <div id="holeSelector" class="hole-selector" role="group" aria-label="ホール選択" hidden></div>
       </section>
 
       <section class="control-section tee-section" aria-labelledby="tee-selector-title">
@@ -42,7 +45,7 @@
       <section id="developerScreen" class="developer-screen" hidden aria-live="polite"></section>
     </main>
 
-    <nav class="bottom-nav" aria-label="ホール移動">
+    <nav class="bottom-nav" aria-label="ホール移動" hidden>
       <button id="previousButton" class="nav-button" type="button" aria-label="前のホールへ">‹<span>前のホール</span></button>
       <button id="nextButton" class="nav-button nav-button-primary" type="button" aria-label="次のホールへ"><span>次のホール</span>›</button>
     </nav>

@@ -107,3 +107,47 @@ h2 { margin: 0 0 11px; font-size: 1rem; }
 .nav-button:first-child { font-size: 1.8rem; }.nav-button span { font-size: 1rem; }.nav-button-primary { background: var(--amber); border-color: var(--amber); color: #17342c; font-size: 1.8rem; }
 .nav-button:disabled { opacity: .42; cursor: default; }
 @media (min-width: 620px) { .bottom-nav { width: min(100%, 540px); left: 50%; transform: translateX(-50%); border-radius: 20px 20px 0 0; } }
+
+/* 9ホール一覧プレーモード */
+[hidden] { display: none !important; }
+.app-shell { padding-bottom: max(34px, env(safe-area-inset-bottom)); }
+.course-picker-label { display: grid; gap: 6px; margin-top: 15px; color: var(--muted); font-size: .78rem; font-weight: 800; }
+.course-picker-label select { width: 100%; min-height: 48px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: #0c2a23; color: var(--ink); font: inherit; font-size: 1rem; font-weight: 800; }
+.strategy-card { border: 0; border-radius: 0; overflow: visible; background: transparent; box-shadow: none; }
+.nine-hole-list { display: grid; gap: 14px; }
+.compact-hole-card { overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(145deg, var(--card-soft), var(--card)); box-shadow: 0 10px 24px rgb(0 0 0 / 14%); }
+.compact-hole-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 15px 11px; border-bottom: 1px solid var(--line); }
+.compact-hole-header > div { display: flex; align-items: baseline; gap: 6px; }
+.compact-hole-header > div strong { font-size: 2rem; line-height: 1; }
+.compact-hole-header > div span { color: var(--muted); font-size: .7rem; font-weight: 900; }
+.compact-hole-header p { display: flex; align-items: baseline; gap: 10px; margin: 0; color: var(--amber); font-weight: 900; }
+.compact-hole-header p b { color: var(--ink); font-size: 1.2rem; }
+.compact-hole-header p small { margin-left: 2px; color: var(--muted); font-size: .72rem; }
+.compact-strategy { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 11px 15px 7px; }
+.compact-strategy > div { display: flex; justify-content: space-between; align-items: center; gap: 7px; min-width: 0; padding: 10px 11px; border: 1px solid rgb(125 183 244 / 38%); border-radius: 11px; background: rgb(72 127 189 / 12%); }
+.compact-strategy span { color: #b7d9fb; font-size: .72rem; font-weight: 900; }
+.compact-strategy strong { font-size: 1.22rem; white-space: nowrap; }
+.compact-strategy .compact-aggressive { border-color: rgb(224 143 82 / 58%); background: rgb(176 82 38 / 18%); }
+.compact-strategy .compact-aggressive span { color: #edb184; }
+.compact-strategy .compact-aggressive strong { color: #ffc08c; }
+.compact-strategy .compact-par3 { grid-column: 1 / -1; }
+.compact-risk { margin: 3px 15px 0; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+.compact-risk b { color: #ffd0be; }
+.compact-reasons { display: grid; gap: 2px; margin: 7px 15px 0; padding-left: 18px; color: var(--muted); font-size: .72rem; line-height: 1.4; }
+.compact-record-form { margin-top: 11px; padding: 12px 15px 13px; border-top: 1px solid var(--line); background: rgb(5 28 23 / 18%); }
+.compact-input-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
+.compact-input-grid label, .compact-other-club { min-width: 0; color: var(--muted); font-size: .68rem; font-weight: 800; }
+.compact-input-grid select, .compact-input-grid input, .compact-other-club input { width: 100%; min-width: 0; min-height: 46px; margin-top: 5px; padding: 7px 6px; border: 1px solid var(--line); border-radius: 9px; background: #0c2a23; color: var(--ink); font: inherit; font-size: .9rem; }
+.compact-other-club { display: grid; margin-top: 8px; }
+.compact-memo, .compact-detail { margin: 9px 0 0; padding: 0; border: 0; background: transparent; }
+.compact-memo summary { min-height: 42px; display: flex; align-items: center; color: var(--muted); cursor: pointer; font-size: .78rem; font-weight: 800; }
+.compact-memo textarea { width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #0c2a23; color: var(--ink); font: inherit; resize: vertical; }
+.compact-save { width: 100%; min-height: 48px; margin-top: 9px; border: 0; border-radius: 11px; background: #74d693; color: #163247; font: inherit; font-size: .92rem; font-weight: 900; }
+.compact-saved { display: block; margin-top: 8px; color: #a9edbd; font-size: .72rem; font-weight: 800; text-align: center; }
+.compact-hole-card > .today-adjustment { margin: 0; padding: 12px 15px; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: rgb(72 127 189 / 6%); }
+.compact-hole-card > .today-adjustment summary span { font-size: .88rem; }
+.compact-hole-card > .today-adjustment summary b { font-size: .68rem; }
+@media (max-width: 370px) {
+  .compact-input-grid { grid-template-columns: 1fr 1fr; }
+  .compact-input-grid label:last-child { grid-column: 1 / -1; }
+}
