@@ -355,9 +355,73 @@ let courseData = {
   ],
 };
 
+// 公開コース情報とクラブ候補は別に保持します。距離未確認のハザードは推測しません。
+const sugiyamaSources = {
+  yardage: "https://booking.gora.golf.rakuten.co.jp/guide/course_info/disp/c_id/250019",
+  west: "https://greenon.jp/course_detail/show_course.php?course=25022&type=all",
+  north: "https://greenon.jp/course_detail/show_course.php?course=25020&type=all",
+};
+
+function createSugiyamaHole(number, par, backYardage, regularYardage, preview, candidate = null) {
+  const section = number <= 9 ? "west" : "north";
+  const hole = createUnconfirmedHole(number, par, regularYardage);
+  return {
+    ...hole,
+    backYardage,
+    tees: {
+      back: { distanceYards: backYardage, dataSource: "楽天GORA" },
+      regular: { distanceYards: regularYardage, dataSource: "楽天GORA" },
+    },
+    parDataSource: "楽天GORA",
+    courseShape: preview.shape,
+    mainRisk: preview.teeRisk,
+    // GreenOnの攻略文は第三者情報。公式攻略欄とは混同しません。
+    officialStrategy: null,
+    leftHazardSeverity: null,
+    rightHazardSeverity: null,
+    fairwayNarrowsWithDistance: null,
+    coursePreview: {
+      ...preview,
+      confidence: candidate ? "B" : "C",
+      sourceName: "GreenOn（第三者のコース案内）",
+      sourceUrl: sugiyamaSources[section],
+    },
+    preRoundStrategyCandidate: candidate,
+    section,
+    sectionHoleNumber: number <= 9 ? number : number - 9,
+  };
+}
+
+const sugiyamaCourseData = {
+  id: "shigaraki-sugiyama-west-north",
+  courseName: "信楽カントリー倶楽部 杉山コース（西→北）",
+  yardageSourceUrl: sugiyamaSources.yardage,
+  tees: [{ id: "back", name: "Back" }, { id: "regular", name: "Regular" }],
+  holes: [
+    createSugiyamaHole(1, 5, 481, 481, { shape: "ほぼ直線", aim: "右バンカーの左", teeRisk: "右バンカー。手前・奥までの距離は未取得", nextShot: null }, { primaryClub: "driver", aggressiveClub: null, reason: "PAR5の距離価値を考慮。右バンカーの左を狙う暫定候補" }),
+    createSugiyamaHole(2, 3, 160, 123, { shape: "打ち下ろし", aim: null, teeRisk: null, nextShot: "打ち下ろしを考慮した番手選択" }),
+    createSugiyamaHole(3, 4, 352, 341, { shape: "フェアウェイが左へ傾斜", aim: null, teeRisk: "左傾斜。左右の逃げ場は未取得", nextShot: null }, { primaryClub: "3w", aggressiveClub: "driver", reason: "左傾斜とDriverの左ミス傾向を考慮。着弾幅は現地確認" }),
+    createSugiyamaHole(4, 4, 371, 351, { shape: null, aim: "左の山裾", teeRisk: null, nextShot: "セカンドショットは池に注意" }, { primaryClub: "driver", aggressiveClub: null, reason: "ティーは左山裾を狙い、池はセカンドの注意点。距離を残しすぎない暫定候補" }),
+    createSugiyamaHole(5, 4, 367, 344, { shape: "ティーショットは打ち上げ", aim: null, teeRisk: null, nextShot: null }, { primaryClub: "driver", aggressiveClub: null, reason: "打ち上げのPAR4で次打距離を考慮。着弾帯は現地確認" }),
+    createSugiyamaHole(6, 4, 359, 359, { shape: "ティーショット着弾帯がブラインド", aim: "やや左からの攻略情報あり", teeRisk: "先のフェアウェイ幅・左右の危険は未取得", nextShot: null }),
+    createSugiyamaHole(7, 5, 447, 447, { shape: null, aim: "バンカーの右", teeRisk: "バンカーまでの距離・左右の余裕は未取得", nextShot: null }),
+    createSugiyamaHole(8, 3, 143, 143, { shape: null, aim: null, teeRisk: "距離と方向の精度が重要", nextShot: null }),
+    createSugiyamaHole(9, 4, 395, 395, { shape: null, aim: "右バンカー方向", teeRisk: "右の林は次打を妨げる可能性", nextShot: "右林が次打の障害になり得る" }),
+    createSugiyamaHole(10, 5, 466, 450, { shape: null, aim: "右バンカーの左", teeRisk: "右バンカーまでの距離は未取得", nextShot: null }, { primaryClub: "driver", aggressiveClub: null, reason: "PAR5の距離価値を考慮。右バンカー左の狙い目を現地確認" }),
+    createSugiyamaHole(11, 4, 368, 349, { shape: null, aim: "左クロスバンカー越えが好ルート", teeRisk: "左クロスバンカー。越えるためのCarryは未取得", nextShot: null }),
+    createSugiyamaHole(12, 3, 173, 144, { shape: null, aim: "グリーン左側", teeRisk: null, nextShot: "左側からの攻略が比較的安全という案内" }),
+    createSugiyamaHole(13, 4, 421, 421, { shape: null, aim: "左カート道方向", teeRisk: "カート道周辺のOB・余裕は未取得", nextShot: null }),
+    createSugiyamaHole(14, 3, 186, 144, { shape: null, aim: null, teeRisk: "右の池", nextShot: "左右奥のバンカーに注意（位置関係は現地確認）" }),
+    createSugiyamaHole(15, 4, 368, 342, { shape: null, aim: "右の山裾", teeRisk: null, nextShot: "セカンドショットは打ち上げ" }, { primaryClub: "driver", aggressiveClub: null, reason: "右山裾を狙い、打ち上げの次打距離を抑える暫定候補" }),
+    createSugiyamaHole(16, 5, 497, 458, { shape: null, aim: "左バンカー越えが好ルート", teeRisk: "左バンカー越えの必要Carryは未取得", nextShot: null }),
+    createSugiyamaHole(17, 4, 406, 374, { shape: null, aim: "フェアウェイ中央", teeRisk: "着弾帯の幅・左右の危険は未取得", nextShot: null }, { primaryClub: "driver", aggressiveClub: null, reason: "長めのPAR4。センター狙いと次打距離を考慮した暫定候補" }),
+    createSugiyamaHole(18, 4, 385, 350, { shape: null, aim: "右の山裾", teeRisk: "左右の逃げ場・着弾帯は未取得", nextShot: null }),
+  ],
+};
+
 // コースを追加するときは、この配列へ同じ構造のコースを登録します。
 // 既存の鬼ノ城IDはlocalStorageとの互換性のため変更しません。
-const courseCatalog = [courseData];
+const courseCatalog = [courseData, sugiyamaCourseData];
 const roundExperienceByCourse = { "kinnojo-out": kinnojoRoundExperience };
 const selected = { courseId: courseData.id, hole: 1, tee: "regular", course: "out" };
 let editMode = false;
@@ -388,6 +452,14 @@ function holeByNumber(number) {
 
 function experienceForHole(hole) {
   return roundExperienceByCourse[courseData.id]?.[hole.holeNumber] ?? {};
+}
+
+function isSugiyamaCourse() {
+  return courseData.id === sugiyamaCourseData.id;
+}
+
+function sectionName(section = selected.course) {
+  return isSugiyamaCourse() ? (section === "out" ? "西" : "北") : section.toUpperCase();
 }
 
 function recordStateKey(holeNumber) {
@@ -455,6 +527,14 @@ function loadSavedLandingZones(targetCourse = courseData) {
     targetCourse.holes.forEach((hole) => {
       const savedHole = Array.isArray(savedHoles[hole.holeNumber]) ? { landingZones: savedHoles[hole.holeNumber] } : savedHoles.find?.((item) => item.holeNumber === hole.holeNumber);
       if (!savedHole) return;
+      if (targetCourse.id === sugiyamaCourseData.id) {
+        // 予習情報は最新版を維持し、端末で入力した実測・実戦データだけを復元します。
+        if (Array.isArray(savedHole.landingZones)) hole.landingZones = savedHole.landingZones.map(normalizeLandingZone);
+        if (savedHole.mapData && typeof savedHole.mapData === "object") hole.mapData = { ...hole.mapData, ...savedHole.mapData };
+        if (savedHole.todayAdjustment && typeof savedHole.todayAdjustment === "object") hole.todayAdjustment = { ...hole.todayAdjustment, ...savedHole.todayAdjustment };
+        if (savedHole.roundRecord) hole.roundRecord = normalizeRoundRecord(savedHole.roundRecord);
+        return;
+      }
       const normalized = { ...savedHole };
       if (Array.isArray(savedHole.landingZones)) normalized.landingZones = savedHole.landingZones.map(normalizeLandingZone);
       if (savedHole.roundRecord) normalized.roundRecord = normalizeRoundRecord(savedHole.roundRecord);
@@ -489,14 +569,17 @@ async function importCourseData(file) {
   const importedCourses = Array.isArray(backup?.courses) ? backup.courses : backup?.course ? [backup.course] : [];
   if (!importedCourses.length) throw new Error("読み込めるコースデータが見つかりません。");
   const matched = importedCourses.flatMap((importedCourse) => {
-    const targetCourse = courseCatalog.find((item) => item.id === importedCourse?.id) ?? (importedCourses.length === 1 ? courseData : null);
+    // 旧JSONもIDまたは名称が一致したコースへ。未知のコースを現在のコースに誤投入しません。
+    const targetCourse = courseCatalog.find((item) => item.id === importedCourse?.id)
+      ?? (!importedCourse?.id ? courseCatalog.find((item) => item.courseName === importedCourse?.courseName)
+        ?? (!importedCourse?.courseName && importedCourses.length === 1 ? courseCatalog[0] : null) : null);
     if (!targetCourse || !Array.isArray(importedCourse?.holes)) return [];
     return importedCourse.holes
       .filter((importedHole) => importedHole && typeof importedHole === "object")
       .map((importedHole) => ({ importedHole, targetCourse, hole: targetCourse.holes.find((item) => item.holeNumber === Number(importedHole.holeNumber)) }))
       .filter(({ hole }) => Boolean(hole));
   });
-  if (matched.length === 0) throw new Error("現在のコースに一致するホール番号がありません。");
+  if (matched.length === 0) throw new Error("登録済みコースに一致するID・ホール番号がありません。バックアップ元のコースを確認してください。");
 
   const previousValues = matched.map(({ hole }) => ({
     hole,
@@ -870,7 +953,7 @@ function renderDeveloperScreen() {
     <button id="startNewRound" class="developer-action developer-action-danger" type="button">新しいラウンドを開始</button>
     ${renderRecommendationValidation()}
     ${renderRoundVerification()}
-    ${hole.holeNumber === 1 ? `<button id="openVerification" class="developer-action" type="button">1番ホール データ確認・地図インポート</button>` : ""}
+    ${courseData.id === "kinnojo-out" && hole.holeNumber === 1 ? `<button id="openVerification" class="developer-action" type="button">1番ホール データ確認・地図インポート</button>` : ""}
     ${renderMapDataStatus(hole)}
     <div class="edit-area"><button id="developerEditToggle" class="edit-button" type="button" aria-expanded="${editMode}">${editMode ? "編集を閉じる" : "コースデータを編集"}</button></div>
     ${editMode ? renderEditor(hole) : ""}`;
@@ -878,6 +961,7 @@ function renderDeveloperScreen() {
 
 function renderRecommendationValidation() {
   const validationHoles = courseData.holes.filter((hole) => hole.fieldValidation);
+  if (!validationHoles.length) return "";
   const cards = validationHoles.map((hole) => {
     const result = evaluatePersonalizedRecommendation(hole);
     const expected = hole.fieldValidation;
@@ -907,10 +991,14 @@ function renderRoundVerification() {
     const clubName = (id) => clubData.find((club) => club.id === id)?.name ?? "対象外";
     const conditions = record.todayConditions ?? {};
     const conditionText = [conditions.windDirection && `風:${todayLabel("windDirection", conditions.windDirection)}`, conditions.windStrength && `強さ:${todayLabel("windStrength", conditions.windStrength)}`, conditions.teePosition && `ティー:${todayLabel("teePosition", conditions.teePosition)}`, conditions.teeDistanceOffset != null && `基準差:${conditions.teeDistanceOffset > 0 ? "+" : ""}${conditions.teeDistanceOffset}yd`, conditions.ground && `地面:${todayLabel("ground", conditions.ground)}`].filter(Boolean).join(" / ") || "未入力";
-    const courseName = hole.holeNumber <= 9 ? "OUT" : "IN";
-    return `<article class="round-record-row"><h3>${courseName} ${hole.holeNumber} <span>PAR ${hole.par} / ${hole.regularYardage ?? "―"}yd</span></h3><p>基本：${clubName(record.preRoundPrimaryClub)}　攻め：${record.preRoundAggressiveClub ? clubName(record.preRoundAggressiveClub) : "―"}　当日：${clubName(record.todayPrimaryClub)}</p><p>実際：${escapeHtml(record.actualClubName ?? "未入力")}　結果：${resultLabel[record.shotResult] ?? "未入力"}　1stパット：${record.firstPuttDistance ?? "―"}${record.firstPuttDistance != null ? "m" : ""}</p><p class="round-meta">条件：${escapeHtml(conditionText)}　事前一致：${record.preRoundMatched == null ? "―" : record.preRoundMatched ? "○" : "×"}　当日一致：${record.todayMatched == null ? "―" : record.todayMatched ? "○" : "×"}</p>${record.memo ? `<p class="round-meta">状況メモ：${escapeHtml(record.memo)}</p>` : ""}${record.resultMemo ? `<p class="round-meta">結果メモ：${escapeHtml(record.resultMemo)}</p>` : ""}</article>`;
+    const courseName = sectionName(hole.holeNumber <= 9 ? "out" : "in");
+    const displayNumber = isSugiyamaCourse() ? hole.sectionHoleNumber : hole.holeNumber;
+    const distance = record.distanceYards ?? hole.tees?.[selected.tee]?.distanceYards ?? hole.regularYardage;
+    const preLabel = hole.par === 3 ? "対象外" : record.preRoundPrimaryClub ? clubName(record.preRoundPrimaryClub) : isSugiyamaCourse() ? "現地判断" : "対象外";
+    const todayLabelText = record.todayPrimaryClub ? clubName(record.todayPrimaryClub) : isSugiyamaCourse() ? "未計算" : "対象外";
+    return `<article class="round-record-row"><h3>${courseName} ${displayNumber} <span>PAR ${hole.par} / ${distance ?? "―"}yd</span></h3><p>基本：${preLabel}　攻め：${record.preRoundAggressiveClub ? clubName(record.preRoundAggressiveClub) : "―"}　当日：${todayLabelText}</p><p>実際：${escapeHtml(record.actualClubName ?? "未入力")}　結果：${resultLabel[record.shotResult] ?? "未入力"}　1stパット：${record.firstPuttDistance ?? "―"}${record.firstPuttDistance != null ? "m" : ""}</p><p class="round-meta">条件：${escapeHtml(conditionText)}　事前一致：${record.preRoundMatched == null ? "―" : record.preRoundMatched ? "○" : "×"}　当日一致：${record.todayMatched == null ? "―" : record.todayMatched ? "○" : "×"}</p>${record.memo ? `<p class="round-meta">状況メモ：${escapeHtml(record.memo)}</p>` : ""}${record.resultMemo ? `<p class="round-meta">結果メモ：${escapeHtml(record.resultMemo)}</p>` : ""}</article>`;
   }).join("");
-  return `<section class="round-verification"><h2>ラウンド検証結果</h2><p>OUT / IN 18ホールを一覧表示します。集計は学習ロジックには反映しません。</p><div class="round-summary"><div><span>記録済み</span><b>${recorded.length} / 18</b></div><div><span>事前推奨一致率</span><b>${percentage(preCompared, "preRoundMatched")}</b></div><div><span>当日推奨一致率</span><b>${percentage(todayCompared, "todayMatched")}</b></div><div><span>FW</span><b>${counts.fw}</b></div><div><span>左ミス / 右ミス</span><b>${counts.left} / ${counts.right}</b></div><div><span>OB</span><b>${counts.ob}</b></div></div><div>${records}</div></section>`;
+  return `<section class="round-verification"><h2>ラウンド検証結果</h2><p>${isSugiyamaCourse() ? "西 / 北" : "OUT / IN"} 18ホールを一覧表示します。集計は学習ロジックには反映しません。</p><div class="round-summary"><div><span>記録済み</span><b>${recorded.length} / 18</b></div><div><span>事前推奨一致率</span><b>${percentage(preCompared, "preRoundMatched")}</b></div><div><span>当日推奨一致率</span><b>${percentage(todayCompared, "todayMatched")}</b></div><div><span>FW</span><b>${counts.fw}</b></div><div><span>左ミス / 右ミス</span><b>${counts.left} / ${counts.right}</b></div><div><span>OB</span><b>${counts.ob}</b></div></div><div>${records}</div></section>`;
 }
 
 function resetRoundForNewPlay() {
@@ -1267,6 +1355,19 @@ function evaluatePersonalizedRecommendation(hole) {
   return { primary, secondary, primaryRecommendation: primary, aggressiveOption, avoid, evaluations };
 }
 
+function recommendationForPlay(hole) {
+  if (hole.par === 3) return null;
+  if (!isSugiyamaCourse()) return evaluatePersonalizedRecommendation(hole);
+  const candidate = hole.preRoundStrategyCandidate;
+  if (!candidate) return null;
+  const club = clubData.find((item) => item.id === candidate.primaryClub);
+  const aggressiveClub = clubData.find((item) => item.id === candidate.aggressiveClub);
+  if (!club) return null;
+  const primary = { club, reasons: [candidate.reason] };
+  const aggressiveOption = aggressiveClub ? { club: aggressiveClub } : null;
+  return { primary, primaryRecommendation: primary, secondary: aggressiveOption, aggressiveOption, avoid: null };
+}
+
 function renderShotRecord(hole, preRecommendation = null) {
   const record = hole.roundRecord ?? {};
   const today = evaluateTodayRecommendation(hole, preRecommendation);
@@ -1371,15 +1472,16 @@ function renderSelectors() {
   const isOut = selected.course === "out";
   const firstHole = isOut ? 1 : 10;
   coursePicker.innerHTML = courseCatalog.map((course) => `<option value="${escapeHtml(course.id)}" ${course.id === courseData.id ? "selected" : ""}>${escapeHtml(course.courseName)}</option>`).join("");
-  courseSelector.innerHTML = ["out", "in"].map((course) => `<button type="button" data-course="${course}" aria-pressed="${selected.course === course}">${course.toUpperCase()}</button>`).join("");
+  courseSelector.innerHTML = ["out", "in"].map((course) => `<button type="button" data-course="${course}" aria-pressed="${selected.course === course}">${sectionName(course)}</button>`).join("");
   holeSelector.innerHTML = Array.from({ length: 9 }, (_, index) => {
     const number = firstHole + index;
     const isSelected = selected.hole === number;
     return `<button class="hole-button" type="button" aria-pressed="${isSelected}" data-hole="${number}">${number}</button>`;
   }).join("");
   document.querySelector("#courseTitle").textContent = courseData.courseName;
-  document.querySelector("#courseLabel").textContent = `${selected.course.toUpperCase()} COURSE`;
-  document.querySelector("#holeProgress").textContent = `${selected.course.toUpperCase()} 9ホール`;
+  document.querySelector("#courseLabel").textContent = `${sectionName()} COURSE`;
+  document.querySelector("#holeProgress").textContent = `${sectionName()} 9ホール`;
+  courseSelector.setAttribute("aria-label", isSugiyamaCourse() ? "西・北コース切り替え" : "OUT・INコース切り替え");
   const previousButton = document.querySelector("#previousButton");
   const nextButton = document.querySelector("#nextButton");
   previousButton.disabled = selected.hole === 1;
@@ -1401,9 +1503,21 @@ function compactSelectOptions(options, currentValue, emptyLabel) {
   return `<option value="">${emptyLabel}</option>${options.map(([value, label]) => `<option value="${value}" ${currentValue === value ? "selected" : ""}>${label}</option>`).join("")}`;
 }
 
+function renderCoursePreview(hole) {
+  const preview = hole.coursePreview;
+  if (!preview) return "";
+  const rows = [
+    ["形状", preview.shape],
+    ["狙い目", preview.aim],
+    ["Tショット注意", preview.teeRisk],
+    ["次打以降", preview.nextShot],
+  ].filter(([, value]) => value);
+  return `<section class="course-preview" aria-label="コース予習情報"><div class="course-preview-heading"><b>コース予習</b><span>情報確度 ${preview.confidence}・${preview.confidence === "B" ? "公開案内を基にした暫定候補" : "公開案内のみ"}</span></div>${rows.length ? `<dl>${rows.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>` : `<p>攻略情報は未取得です。現地で確認してください。</p>`}<small>出典：${escapeHtml(preview.sourceName)}。距離・危険範囲は未測定です。</small></section>`;
+}
+
 function renderCompactHoleCard(hole) {
   const record = normalizeRoundRecord(hole.roundRecord) ?? {};
-  const recommendation = hole.par === 3 ? null : evaluatePersonalizedRecommendation(hole);
+  const recommendation = recommendationForPlay(hole);
   const primary = recommendation?.primaryRecommendation;
   const aggressive = recommendation?.aggressiveOption;
   const clubOptions = [...clubData.map((club) => [club.id, club.name]), ["other", "その他"]];
@@ -1414,18 +1528,24 @@ function renderCompactHoleCard(hole) {
     ? `<span class="compact-saved">保存済み${record.actualClubName ? `：${escapeHtml(record.actualClubName)}` : ""}${savedResult ? ` / ${savedResult}` : ""}${record.firstPuttDistance != null ? ` / 1st ${record.firstPuttDistance}m` : ""}</span>`
     : "";
   const isSaved = Boolean(record.recordedAt) && todayAdjustmentMatchesRecord(hole, record) && !dirtyRecordHoles.has(recordStateKey(hole.holeNumber));
+  const displayNumber = isSugiyamaCourse() ? hole.sectionHoleNumber : hole.holeNumber;
+  const strategyDisplay = primary
+    ? `<div class="compact-primary"><span>${isSugiyamaCourse() ? "安全推奨候補" : "安全推奨"}</span><strong>${primary.club.name}</strong></div>${aggressive ? `<div class="compact-aggressive"><span>攻めるなら</span><strong>${aggressive.club.name}</strong></div>` : ""}`
+    : hole.par === 3 ? `<div class="compact-par3"><span>PAR3</span><strong>戦略判定対象外</strong></div>`
+      : `<div class="compact-onsite"><span>安全推奨</span><strong>現地判断</strong></div>`;
   return `<article class="compact-hole-card" id="hole-${hole.holeNumber}">
-    <header class="compact-hole-header"><div><strong>${hole.holeNumber}</strong><span>HOLE</span></div><p>PAR ${hole.par ?? "―"}<b>${distance ?? "―"}<small>yd</small></b></p></header>
-    <div class="compact-strategy">${primary ? `<div class="compact-primary"><span>安全推奨</span><strong>${primary.club.name}</strong></div>${aggressive ? `<div class="compact-aggressive"><span>攻めるなら</span><strong>${aggressive.club.name}</strong></div>` : ""}` : `<div class="compact-par3"><span>PAR3</span><strong>戦略判定対象外</strong></div>`}</div>
+    <header class="compact-hole-header"><div><strong>${displayNumber}</strong><span>${isSugiyamaCourse() ? sectionName(hole.section === "west" ? "out" : "in") : "HOLE"}</span></div><p>PAR ${hole.par ?? "―"}<b>${distance ?? "―"}<small>yd</small></b></p></header>
+    <div class="compact-strategy">${strategyDisplay}</div>
     <p class="compact-risk"><b>注意：</b>${escapeHtml(compactRiskText(hole))}</p>
     ${primary?.reasons?.length ? `<ul class="compact-reasons">${primary.reasons.slice(0, 2).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>` : ""}
+    ${renderCoursePreview(hole)}
     <form class="compact-record-form" data-hole="${hole.holeNumber}">
       <div class="compact-input-grid"><label>使用クラブ<select name="actualClub">${compactSelectOptions(clubOptions, record.actualClubId, "選択")}</select></label><label>結果<select name="shotResult">${compactSelectOptions(resultOptions, record.shotResult, "選択")}</select></label><label>1stパット距離<input name="firstPuttDistance" type="number" inputmode="decimal" min="0" step="0.1" value="${inputValue(record.firstPuttDistance)}" placeholder="m" /></label></div>
       <label class="compact-other-club" ${record.actualClubId === "other" ? "" : "hidden"}>その他のクラブ<input name="otherClub" value="${escapeHtml(record.otherClubName ?? "")}" /></label>
       <details class="compact-memo" ${record.resultMemo ? "open" : ""}><summary>メモ${record.resultMemo ? "（入力済み）" : "（任意）"}</summary><textarea name="shotResultMemo" rows="2" placeholder="判断理由や実戦で気づいたこと">${escapeHtml(record.resultMemo ?? "")}</textarea></details>
       <button class="compact-save ${isSaved ? "is-saved" : ""}" type="submit">${isSaved ? "✓ 保存済み" : "このホールを保存"}</button>${savedSummary}
     </form>
-    ${renderTodayAdjustment(hole, recommendation)}
+    ${renderTodayAdjustment(hole, isSugiyamaCourse() ? null : recommendation)}
   </article>`;
 }
 
@@ -1435,7 +1555,7 @@ function renderStrategy() {
   const max = isOut ? 9 : 18;
   const holes = courseData.holes.filter((hole) => hole.holeNumber >= min && hole.holeNumber <= max);
   const nextSide = isOut ? "in" : "out";
-  const switchLabel = isOut ? "INへ →" : "← OUTへ";
+  const switchLabel = isOut ? `${sectionName("in")}へ →` : `← ${sectionName("out")}へ`;
   strategyCard.innerHTML = holes.length
     ? `<div class="nine-hole-list">${holes.map(renderCompactHoleCard).join("")}<div class="nine-hole-switch"><button type="button" data-nine-switch="${nextSide}">${switchLabel}</button></div></div>`
     : `<div class="pending-card"><h3>${selected.course.toUpperCase()}</h3><p>このコースのホールデータはまだ登録されていません。</p></div>`;
@@ -1663,8 +1783,9 @@ strategyCard.addEventListener("submit", (event) => {
   const data = new FormData(form);
   const actualClubId = data.get("actualClub") || null;
   const otherClubName = String(data.get("otherClub") ?? "").trim() || null;
-  const pre = hole.par === 3 ? null : evaluatePersonalizedRecommendation(hole);
-  const today = evaluateTodayRecommendation(hole, pre);
+  const pre = recommendationForPlay(hole);
+  // 杉山は実測ハザードが未登録。既存の当日入力は残し、根拠のない自動再推薦はしません。
+  const today = evaluateTodayRecommendation(hole, isSugiyamaCourse() ? null : pre);
   const actualClubName = actualClubId === "other" ? otherClubName || "その他" : clubData.find((club) => club.id === actualClubId)?.name ?? null;
   const previousRecord = normalizeRoundRecord(hole.roundRecord) ?? {};
   hole.roundRecord = {
@@ -1672,7 +1793,7 @@ strategyCard.addEventListener("submit", (event) => {
     holeNumber: hole.holeNumber,
     par: hole.par,
     distanceYards: hole.tees[selected.tee]?.distanceYards ?? null,
-    preRoundPrimaryClub: pre?.primary.club.id ?? null,
+    preRoundPrimaryClub: pre?.primary?.club.id ?? null,
     preRoundSecondaryClub: pre?.secondary?.club.id ?? null,
     preRoundAggressiveClub: pre?.aggressiveOption?.club.id ?? null,
     todayConditions: normalizedTodayAdjustment(hole),
@@ -1684,7 +1805,7 @@ strategyCard.addEventListener("submit", (event) => {
     actualClubName,
     otherClubName,
     shotResult: data.get("shotResult") || null,
-    preRoundMatched: pre && actualClubId && actualClubId !== "other" ? actualClubId === pre.primary.club.id : null,
+    preRoundMatched: pre?.primary && actualClubId && actualClubId !== "other" ? actualClubId === pre.primary.club.id : null,
     todayMatched: today.primary && actualClubId && actualClubId !== "other" ? actualClubId === today.primary.club.id : null,
     memo: normalizedTodayAdjustment(hole).memo,
     resultMemo: String(data.get("shotResultMemo") ?? "").trim() || null,
