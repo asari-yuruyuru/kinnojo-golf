@@ -443,6 +443,7 @@ const shotSaveTimers = new Map();
 const pendingShotSaves = new Map();
 const shotEditVersions = new Map();
 let reportSaveQueue = Promise.resolve();
+let activeShotRecognition = null;
 const reportDefinitions = Object.freeze({
   tee: { label: "Tショット報告", guide: "クラブ｜狙い｜避けたい場所｜風｜打つ前に考えたこと｜結果・球筋｜原因・気づき", promptId: "golf-report-tee", sequence: 1 },
   second: { label: "セカンド報告", guide: "残り距離｜ライ・傾斜｜風｜クラブ｜狙い｜避けたい場所｜打つ前に考えたこと｜結果・球筋｜原因・気づき", promptId: "golf-report-second", sequence: 2 },
@@ -949,7 +950,7 @@ async function persistV4Shot(payload) {
     const shot = log.shots.find((item) => item.shotId === payload.shotId);
     if (!shot) throw new Error("保存対象のショットが見つかりません。");
     shot.text = payload.text;
-    shot.inputMethod = shot.inputMethod ?? "text";
+    shot.inputMethod = payload.inputMethod ?? shot.inputMethod ?? "text";
     shot.recordedAt = shot.recordedAt ?? (payload.text.length ? now : null);
     shot.updatedAt = now;
   });
@@ -990,8 +991,126 @@ function renderShotLog(hole) {
   const log = activeV4HoleLog(hole.holeNumber);
   if (!log) return `<section class="shot-log is-disabled"><div class="shot-log-title"><b>ショット記録</b><span>保存先なし</span></div></section>`;
   const shots = Array.isArray(log.shots) ? [...log.shots].sort((a, b) => a.sequence - b.sequence) : [];
-  const rows = shots.map((shot) => `<article class="shot-log-row" data-shot-id="${escapeHtml(shot.shotId)}"><div class="shot-log-heading"><b>${shot.sequence}打目</b><button type="button" data-delete-shot="${escapeHtml(shot.shotId)}" data-hole="${hole.holeNumber}" aria-label="${shot.sequence}打目を削除">削除</button></div><textarea rows="2" data-shot-id="${escapeHtml(shot.shotId)}" data-hole="${hole.holeNumber}" aria-label="${shot.sequence}打目のメモ" placeholder="例：Driver、右ラフ。右を避けた">${escapeHtml(shot.text ?? "")}</textarea><span class="shot-save-status" data-hole="${hole.holeNumber}" data-shot-id="${escapeHtml(shot.shotId)}" data-status="saved" aria-live="polite">${shot.text ? "✓ 保存済み" : "未入力"}</span></article>`).join("");
+  const rows = shots.map((shot) => `<article class="shot-log-row" data-shot-id="${escapeHtml(shot.shotId)}"><div class="shot-log-heading"><b>${shot.sequence}打目</b><button type="button" data-delete-shot="${escapeHtml(shot.shotId)}" data-hole="${hole.holeNumber}" aria-label="${shot.sequence}打目を削除">削除</button></div><textarea rows="2" data-shot-id="${escapeHtml(shot.shotId)}" data-hole="${hole.holeNumber}" aria-label="${shot.sequence}打目のメモ" placeholder="例：Driver、右ラフ。右を避けた">${escapeHtml(shot.text ?? "")}</textarea><div class="shot-voice-controls"><button class="shot-mic-button" type="button" data-voice-shot="${escapeHtml(shot.shotId)}" data-hole="${hole.holeNumber}" aria-pressed="false">🎤 音声入力</button><span class="shot-voice-status" data-voice-status="${escapeHtml(shot.shotId)}" aria-live="polite">${shot.inputMethod === "voice" ? "音声入力済み" : ""}</span></div><span class="shot-save-status" data-hole="${hole.holeNumber}" data-shot-id="${escapeHtml(shot.shotId)}" data-status="saved" aria-live="polite">${shot.text ? "✓ 保存済み" : "未入力"}</span></article>`).join("");
   return `<details class="shot-log" data-shot-log-hole="${hole.holeNumber}" ${shots.length ? "" : ""}><summary><span>ショット記録</span><b>${shots.length ? `${shots.length}打` : "未入力"}</b></summary><div class="shot-log-content">${rows || `<p class="shot-log-empty">まだショットはありません。</p>`}<button class="add-shot-button" type="button" data-add-shot="${hole.holeNumber}">＋ ショット追加</button></div></details>`;
+}
+
+function speechRecognitionClass() {
+  return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
+}
+
+function appendedVoiceText(existingText, transcript) {
+  const spoken = String(transcript ?? "").trim();
+  if (!spoken) return existingText;
+  return existingText ? `${existingText}${/\s$/.test(existingText) ? "" : "\n"}${spoken}` : spoken;
+}
+
+function setShotVoiceStatus(shotId, message, state = "idle") {
+  const status = strategyCard.querySelector(`[data-voice-status="${shotId}"]`);
+  const button = strategyCard.querySelector(`[data-voice-shot="${shotId}"]`);
+  if (status) { status.textContent = message; status.dataset.state = state; }
+  if (button) {
+    const listening = state === "listening" || state === "stopping";
+    button.setAttribute("aria-pressed", String(listening));
+    button.textContent = listening ? "■ 停止" : "🎤 音声入力";
+  }
+}
+
+function stopActiveShotRecognition(message = "停止しました") {
+  if (!activeShotRecognition) return;
+  const current = activeShotRecognition;
+  current.stopRequested = true;
+  setShotVoiceStatus(current.shotId, message, "stopping");
+  try { current.recognition.stop(); } catch { current.recognition.abort?.(); }
+}
+
+function cancelActiveShotRecognition() {
+  if (!activeShotRecognition) return;
+  const current = activeShotRecognition;
+  current.discard = true;
+  try { current.recognition.abort(); } catch {}
+  activeShotRecognition = null;
+}
+
+function voiceErrorMessage(errorCode) {
+  if (["not-allowed", "service-not-allowed"].includes(errorCode)) return "マイクまたは音声認識の使用が許可されていません";
+  if (errorCode === "audio-capture") return "マイクを使用できません";
+  if (errorCode === "no-speech") return "音声を認識できませんでした";
+  if (errorCode === "network") return "音声認識の通信に失敗しました";
+  if (errorCode === "language-not-supported") return "日本語音声認識を利用できません";
+  if (errorCode === "aborted") return "停止しました";
+  return "音声認識に失敗しました";
+}
+
+function startShotVoiceInput(holeNumber, shotId) {
+  const textarea = strategyCard.querySelector(`.shot-log-row textarea[data-shot-id="${shotId}"]`);
+  const round = v4State.activeRound;
+  if (!textarea || !round || round.courseId !== courseData.id) return;
+  if (activeShotRecognition?.shotId === shotId) {
+    stopActiveShotRecognition();
+    return;
+  }
+  if (activeShotRecognition) {
+    try { activeShotRecognition.recognition.abort(); } catch {}
+    activeShotRecognition = null;
+  }
+  const Recognition = speechRecognitionClass();
+  if (!Recognition) {
+    setShotVoiceStatus(shotId, "直接音声入力に未対応です。キーボードのマイクを使用してください", "unsupported");
+    textarea.focus();
+    return;
+  }
+  const recognition = new Recognition();
+  const state = { recognition, shotId, holeNumber, roundId: round.roundId, courseId: round.courseId, baseText: textarea.value, finalText: "", interimText: "", receivedResult: false, stopRequested: false, errorMessage: null };
+  activeShotRecognition = state;
+  recognition.lang = "ja-JP";
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  recognition.onstart = () => setShotVoiceStatus(shotId, "音声認識中…話してください", "listening");
+  recognition.onresult = (event) => {
+    if (state.discard) return;
+    let interim = "";
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const transcript = event.results[index]?.[0]?.transcript ?? "";
+      if (event.results[index].isFinal) state.finalText += transcript;
+      else interim += transcript;
+    }
+    state.interimText = interim;
+    state.receivedResult = Boolean(state.finalText || state.interimText);
+    textarea.value = appendedVoiceText(state.baseText, `${state.finalText}${state.interimText}`);
+    setShotVoiceStatus(shotId, interim ? `認識中：${interim}` : "音声を認識しました", interim ? "listening" : "recognized");
+    if (state.finalText) {
+      setShotSaveStatus(holeNumber, shotId, "typing", "入力中");
+      queueShotSave({ roundId: state.roundId, courseId: state.courseId, holeNumber, shotId, text: appendedVoiceText(state.baseText, state.finalText), inputMethod: "voice" });
+    }
+  };
+  recognition.onerror = (event) => {
+    state.errorMessage = voiceErrorMessage(event.error);
+    setShotVoiceStatus(shotId, state.errorMessage, "error");
+  };
+  recognition.onend = () => {
+    if (state.discard) return;
+    if (!state.finalText && state.interimText) {
+      const text = appendedVoiceText(state.baseText, state.interimText);
+      textarea.value = text;
+      setShotSaveStatus(holeNumber, shotId, "typing", "入力中");
+      queueShotSave({ roundId: state.roundId, courseId: state.courseId, holeNumber, shotId, text, inputMethod: "voice" });
+    }
+    if (!state.errorMessage) {
+      const message = state.receivedResult ? "音声入力を反映しました" : state.stopRequested ? "停止しました" : "音声を認識できませんでした";
+      setShotVoiceStatus(shotId, message, state.receivedResult ? "recognized" : "idle");
+    }
+    if (activeShotRecognition === state) activeShotRecognition = null;
+  };
+  try {
+    recognition.start();
+  } catch (error) {
+    state.errorMessage = "音声認識を開始できませんでした";
+    setShotVoiceStatus(shotId, state.errorMessage, "error");
+    activeShotRecognition = null;
+    textarea.focus();
+  }
 }
 
 function holeByNumber(number) {
@@ -2111,6 +2230,7 @@ function renderCompactHoleCard(hole) {
 }
 
 function renderStrategy() {
+  cancelActiveShotRecognition();
   const isOut = selected.course === "out";
   const min = isOut ? 1 : 10;
   const max = isOut ? 9 : 18;
@@ -2152,6 +2272,11 @@ strategyCard.addEventListener("click", (event) => {
   if (button) switchNineHoles(button.dataset.nineSwitch);
 });
 strategyCard.addEventListener("click", async (event) => {
+  const voiceButton = event.target.closest("[data-voice-shot]");
+  if (voiceButton) {
+    startShotVoiceInput(Number(voiceButton.dataset.hole), voiceButton.dataset.voiceShot);
+    return;
+  }
   const addButton = event.target.closest("[data-add-shot]");
   if (addButton) {
     const holeNumber = Number(addButton.dataset.addShot);
@@ -2174,6 +2299,7 @@ strategyCard.addEventListener("click", async (event) => {
   const row = deleteButton.closest(".shot-log-row");
   const label = row?.querySelector(".shot-log-heading b")?.textContent ?? "このショット";
   if (!window.confirm(`${label}を削除しますか？`)) return;
+  if (activeShotRecognition?.shotId === deleteButton.dataset.deleteShot) cancelActiveShotRecognition();
   deleteButton.disabled = true;
   try {
     await deleteV4Shot(holeNumber, deleteButton.dataset.deleteShot);
@@ -2458,8 +2584,9 @@ strategyCard.addEventListener("input", (event) => {
     const shotId = shotInput.dataset.shotId;
     const round = v4State.activeRound;
     if (!round || round.courseId !== courseData.id) return;
+    if (activeShotRecognition?.shotId === shotId) cancelActiveShotRecognition();
     setShotSaveStatus(holeNumber, shotId, "typing", "入力中");
-    queueShotSave({ roundId: round.roundId, courseId: round.courseId, holeNumber, shotId, text: shotInput.value });
+    queueShotSave({ roundId: round.roundId, courseId: round.courseId, holeNumber, shotId, text: shotInput.value, inputMethod: "text" });
     return;
   }
   const reportInput = event.target.closest(".hole-report-editor textarea[data-report-type]");

@@ -200,6 +200,13 @@ h2 { margin: 0 0 11px; font-size: 1rem; }
 .shot-log-heading b { color: var(--amber); font-size: .82rem; }
 .shot-log-heading button { min-width: 54px; min-height: 36px; border: 1px solid rgb(255 157 122 / 42%); border-radius: 8px; background: transparent; color: #ffd0be; font: inherit; font-size: .72rem; font-weight: 800; }
 .shot-log-row textarea { width: 100%; min-height: 70px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #0c2a23; color: var(--ink); font: inherit; font-size: 1rem; line-height: 1.45; resize: vertical; }
+.shot-voice-controls { display: grid; grid-template-columns: minmax(118px, auto) minmax(0, 1fr); align-items: center; gap: 9px; margin-top: 7px; }
+.shot-mic-button { min-height: 48px; padding: 8px 12px; border: 1px solid #7db7f4; border-radius: 10px; background: rgb(72 127 189 / 11%); color: #c7e2ff; font: inherit; font-size: .82rem; font-weight: 900; }
+.shot-mic-button[aria-pressed="true"] { border-color: #ff9d7a; background: rgb(219 104 62 / 14%); color: #ffd0be; }
+.shot-voice-status { min-width: 0; color: var(--muted); font-size: .66rem; font-weight: 800; line-height: 1.35; overflow-wrap: anywhere; }
+.shot-voice-status[data-state="listening"], .shot-voice-status[data-state="stopping"] { color: #ffe1a0; }
+.shot-voice-status[data-state="recognized"] { color: #a9edbd; }
+.shot-voice-status[data-state="error"] { color: #ffd0be; }
 .shot-save-status { display: block; min-height: 18px; margin-top: 4px; color: var(--muted); font-size: .66rem; font-weight: 900; text-align: right; }
 .shot-save-status[data-status="typing"], .shot-save-status[data-status="saving"] { color: #ffe1a0; }
 .shot-save-status[data-status="saved"] { color: #a9edbd; }
@@ -226,6 +233,7 @@ h2 { margin: 0 0 11px; font-size: 1rem; }
 .nine-hole-switch { padding: 2px 0 8px; }
 .nine-hole-switch button { width: 100%; min-height: 62px; border: 1px solid var(--amber); border-radius: 16px; background: var(--amber); color: #17342c; font: inherit; font-size: 1.08rem; font-weight: 900; cursor: pointer; }
 @media (max-width: 370px) {
+  .shot-voice-controls { grid-template-columns: 1fr; }
   .compact-input-grid { grid-template-columns: 1fr 1fr; }
   .compact-input-grid label:last-child { grid-column: 1 / -1; }
 }
