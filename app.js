@@ -439,6 +439,9 @@ const REPORT_AUTOSAVE_DELAY_MS = 800;
 const reportSaveTimers = new Map();
 const pendingReportSaves = new Map();
 const reportEditVersions = new Map();
+const shotSaveTimers = new Map();
+const pendingShotSaves = new Map();
+const shotEditVersions = new Map();
 let reportSaveQueue = Promise.resolve();
 const reportDefinitions = Object.freeze({
   tee: { label: "Tショット報告", guide: "クラブ｜狙い｜避けたい場所｜風｜打つ前に考えたこと｜結果・球筋｜原因・気づき", promptId: "golf-report-tee", sequence: 1 },
@@ -543,6 +546,7 @@ function createV4HoleLog(course, hole, teeId, playOrder, legId, legacyRecord = n
     strategySnapshot: v4StrategySnapshot(hole, legacyRecord),
     structuredResult,
     reports,
+    shots: [],
     legacyV3: legacyRecord ? { originalRoundRecord: structuredClone(legacyRecord) } : null,
     createdAt: now,
     updatedAt: now,
@@ -704,6 +708,7 @@ async function startV4Round() {
 async function finishV4Round() {
   if (!v4State.activeRound) return;
   flushPendingReports();
+  flushPendingShots();
   await reportSaveQueue;
   const now = new Date().toISOString();
   const completed = { ...v4State.activeRound, status: "completed", endedAt: now, updatedAt: now };
@@ -886,6 +891,107 @@ function renderHoleReports(hole) {
     return `<details class="hole-report-item" data-report-type="${type}" ${report?.text ? "" : ""}><summary><span>${definition.label}</span><b>${report?.text ? "入力済み" : "未入力"}</b></summary><div class="hole-report-editor"><p class="report-guide">${escapeHtml(definition.guide).replaceAll("\n", "<br>")}</p><textarea rows="4" data-hole="${hole.holeNumber}" data-report-type="${type}" aria-label="${definition.label}" placeholder="必要なことだけ短く入力してください">${escapeHtml(report?.text ?? "")}</textarea><span class="report-save-status" data-hole="${hole.holeNumber}" data-report-type="${type}" data-status="${report?.text ? "saved" : "empty"}" aria-live="polite">${report?.text ? "✓ 保存済み" : "未入力"}</span></div></details>`;
   }).join("");
   return `<section class="hole-reports"><div class="hole-reports-title"><b>ラウンド報告</b><span>自動保存</span></div>${fields}</section>`;
+}
+
+function setShotSaveStatus(holeNumber, shotId, status, message) {
+  const element = strategyCard.querySelector(`.shot-save-status[data-hole="${holeNumber}"][data-shot-id="${shotId}"]`);
+  if (!element) return;
+  element.dataset.status = status;
+  element.textContent = message;
+}
+
+async function mutateActiveV4Round({ roundId, courseId, holeNumber }, mutate) {
+  if (!v4State.activeRound || v4State.activeRound.roundId !== roundId || v4State.activeRound.courseId !== courseId) throw new Error("保存対象の進行中ラウンドが変わりました。");
+  const round = await GolfV4Storage.getRoundSession(roundId);
+  if (!round || round.status !== "inProgress" || round.courseId !== courseId) throw new Error("進行中のラウンドが見つかりません。");
+  const log = round.holeLogs.find((item) => item.courseHoleRef?.legacyHoleNumber === holeNumber);
+  if (!log) throw new Error("このホールの保存先が見つかりません。");
+  if (!Array.isArray(log.shots)) log.shots = [];
+  const now = new Date().toISOString();
+  mutate(log, now);
+  log.updatedAt = now;
+  round.updatedAt = now;
+  await GolfV4Storage.putRoundSession(round);
+  v4State.activeRound = round;
+  v4State.rounds = v4State.rounds.map((item) => item.roundId === round.roundId ? round : item);
+  return { round, log };
+}
+
+async function addV4Shot(holeNumber) {
+  const round = v4State.activeRound;
+  if (!round || round.courseId !== courseData.id) throw new Error("ラウンドを開始するとショットを追加できます。");
+  const shotId = `shot-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+  const operation = reportSaveQueue.then(() => mutateActiveV4Round({ roundId: round.roundId, courseId: round.courseId, holeNumber }, (log, now) => {
+    log.shots.push({ shotId, sequence: log.shots.length + 1, text: "", inputMethod: "text", recordedAt: null, createdAt: now, updatedAt: now });
+  }));
+  reportSaveQueue = operation.catch(() => {});
+  await operation;
+  return shotId;
+}
+
+async function deleteV4Shot(holeNumber, shotId) {
+  const round = v4State.activeRound;
+  if (!round || round.courseId !== courseData.id) throw new Error("進行中のラウンドが見つかりません。");
+  const key = `${round.roundId}:${holeNumber}:${shotId}`;
+  clearTimeout(shotSaveTimers.get(key));
+  shotSaveTimers.delete(key);
+  pendingShotSaves.delete(key);
+  const operation = reportSaveQueue.then(() => mutateActiveV4Round({ roundId: round.roundId, courseId: round.courseId, holeNumber }, (log, now) => {
+    log.shots = log.shots.filter((shot) => shot.shotId !== shotId);
+    log.shots.forEach((shot, index) => { shot.sequence = index + 1; shot.updatedAt = now; });
+  }));
+  reportSaveQueue = operation.catch(() => {});
+  await operation;
+}
+
+async function persistV4Shot(payload) {
+  await mutateActiveV4Round(payload, (log, now) => {
+    const shot = log.shots.find((item) => item.shotId === payload.shotId);
+    if (!shot) throw new Error("保存対象のショットが見つかりません。");
+    shot.text = payload.text;
+    shot.inputMethod = shot.inputMethod ?? "text";
+    shot.recordedAt = shot.recordedAt ?? (payload.text.length ? now : null);
+    shot.updatedAt = now;
+  });
+}
+
+function queueShotSave(payload) {
+  const key = `${payload.roundId}:${payload.holeNumber}:${payload.shotId}`;
+  const editVersion = (shotEditVersions.get(key) ?? 0) + 1;
+  shotEditVersions.set(key, editVersion);
+  pendingShotSaves.set(key, { ...payload, editVersion });
+  clearTimeout(shotSaveTimers.get(key));
+  shotSaveTimers.set(key, setTimeout(() => flushShotSave(key), REPORT_AUTOSAVE_DELAY_MS));
+}
+
+function flushShotSave(key) {
+  clearTimeout(shotSaveTimers.get(key));
+  shotSaveTimers.delete(key);
+  const payload = pendingShotSaves.get(key);
+  if (!payload) return reportSaveQueue;
+  pendingShotSaves.delete(key);
+  setShotSaveStatus(payload.holeNumber, payload.shotId, "saving", "保存中");
+  reportSaveQueue = reportSaveQueue.then(() => persistV4Shot(payload)).then(() => {
+    if (shotEditVersions.get(key) === payload.editVersion) setShotSaveStatus(payload.holeNumber, payload.shotId, "saved", "✓ 保存済み");
+  }).catch((error) => {
+    if (shotEditVersions.get(key) === payload.editVersion) setShotSaveStatus(payload.holeNumber, payload.shotId, "error", "保存エラー");
+    console.error("Shot autosave failed:", error);
+  });
+  return reportSaveQueue;
+}
+
+function flushPendingShots() {
+  [...pendingShotSaves.keys()].forEach((key) => flushShotSave(key));
+}
+
+function renderShotLog(hole) {
+  const active = v4State.activeRound;
+  if (!active || active.courseId !== courseData.id) return `<section class="shot-log is-disabled"><div class="shot-log-title"><b>ショット記録</b><span>未開始</span></div><p>ラウンドを開始すると1打ごとのメモを記録できます。</p></section>`;
+  const log = activeV4HoleLog(hole.holeNumber);
+  if (!log) return `<section class="shot-log is-disabled"><div class="shot-log-title"><b>ショット記録</b><span>保存先なし</span></div></section>`;
+  const shots = Array.isArray(log.shots) ? [...log.shots].sort((a, b) => a.sequence - b.sequence) : [];
+  const rows = shots.map((shot) => `<article class="shot-log-row" data-shot-id="${escapeHtml(shot.shotId)}"><div class="shot-log-heading"><b>${shot.sequence}打目</b><button type="button" data-delete-shot="${escapeHtml(shot.shotId)}" data-hole="${hole.holeNumber}" aria-label="${shot.sequence}打目を削除">削除</button></div><textarea rows="2" data-shot-id="${escapeHtml(shot.shotId)}" data-hole="${hole.holeNumber}" aria-label="${shot.sequence}打目のメモ" placeholder="例：Driver、右ラフ。右を避けた">${escapeHtml(shot.text ?? "")}</textarea><span class="shot-save-status" data-hole="${hole.holeNumber}" data-shot-id="${escapeHtml(shot.shotId)}" data-status="saved" aria-live="polite">${shot.text ? "✓ 保存済み" : "未入力"}</span></article>`).join("");
+  return `<details class="shot-log" data-shot-log-hole="${hole.holeNumber}" ${shots.length ? "" : ""}><summary><span>ショット記録</span><b>${shots.length ? `${shots.length}打` : "未入力"}</b></summary><div class="shot-log-content">${rows || `<p class="shot-log-empty">まだショットはありません。</p>`}<button class="add-shot-button" type="button" data-add-shot="${hole.holeNumber}">＋ ショット追加</button></div></details>`;
 }
 
 function holeByNumber(number) {
@@ -1993,6 +2099,7 @@ function renderCompactHoleCard(hole) {
     ${primary?.reasons?.length ? `<ul class="compact-reasons">${primary.reasons.slice(0, 2).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>` : ""}
     ${renderCoursePreview(hole)}
     ${renderHoleReports(hole)}
+    ${renderShotLog(hole)}
     <form class="compact-record-form" data-hole="${hole.holeNumber}">
       <div class="compact-input-grid"><label>使用クラブ<select name="actualClub">${compactSelectOptions(clubOptions, record.actualClubId, "選択")}</select></label><label>結果<select name="shotResult">${compactSelectOptions(resultOptions, record.shotResult, "選択")}</select></label><label>1stパット距離<input name="firstPuttDistance" type="number" inputmode="decimal" min="0" step="0.1" value="${inputValue(record.firstPuttDistance)}" placeholder="m" /></label></div>
       <label class="compact-other-club" ${record.actualClubId === "other" ? "" : "hidden"}>その他のクラブ<input name="otherClub" value="${escapeHtml(record.otherClubName ?? "")}" /></label>
@@ -2043,6 +2150,40 @@ function switchNineHoles(course) {
 strategyCard.addEventListener("click", (event) => {
   const button = event.target.closest("[data-nine-switch]");
   if (button) switchNineHoles(button.dataset.nineSwitch);
+});
+strategyCard.addEventListener("click", async (event) => {
+  const addButton = event.target.closest("[data-add-shot]");
+  if (addButton) {
+    const holeNumber = Number(addButton.dataset.addShot);
+    addButton.disabled = true;
+    try {
+      const shotId = await addV4Shot(holeNumber);
+      renderStrategy();
+      const details = strategyCard.querySelector(`.shot-log[data-shot-log-hole="${holeNumber}"]`);
+      if (details) details.open = true;
+      strategyCard.querySelector(`textarea[data-shot-id="${shotId}"]`)?.focus();
+    } catch (error) {
+      window.alert(`ショットを追加できませんでした：${error instanceof Error ? error.message : "保存領域を確認してください。"}`);
+      addButton.disabled = false;
+    }
+    return;
+  }
+  const deleteButton = event.target.closest("[data-delete-shot]");
+  if (!deleteButton) return;
+  const holeNumber = Number(deleteButton.dataset.hole);
+  const row = deleteButton.closest(".shot-log-row");
+  const label = row?.querySelector(".shot-log-heading b")?.textContent ?? "このショット";
+  if (!window.confirm(`${label}を削除しますか？`)) return;
+  deleteButton.disabled = true;
+  try {
+    await deleteV4Shot(holeNumber, deleteButton.dataset.deleteShot);
+    renderStrategy();
+    const details = strategyCard.querySelector(`.shot-log[data-shot-log-hole="${holeNumber}"]`);
+    if (details) details.open = true;
+  } catch (error) {
+    window.alert(`ショットを削除できませんでした：${error instanceof Error ? error.message : "保存領域を確認してください。"}`);
+    deleteButton.disabled = false;
+  }
 });
 coursePicker.addEventListener("change", (event) => {
   const nextCourse = courseCatalog.find((item) => item.id === event.target.value);
@@ -2113,6 +2254,7 @@ developerScreen.addEventListener("click", async (event) => {
   if (event.target.closest("#resetRoundInputs") && window.confirm(`${courseData.courseName}の使用クラブ・結果・1stパット距離・メモを全ホール分リセットします。コース戦略と報告原文は削除しません。よろしいですか？`)) {
     try {
       flushPendingReports();
+      flushPendingShots();
       await reportSaveQueue;
       await resetRoundInputsForCurrentCourse();
       renderDeveloperScreen();
@@ -2310,6 +2452,16 @@ strategyCard.addEventListener("change", (event) => {
   if (other) other.hidden = event.target.value !== "other";
 });
 strategyCard.addEventListener("input", (event) => {
+  const shotInput = event.target.closest(".shot-log-row textarea[data-shot-id]");
+  if (shotInput) {
+    const holeNumber = Number(shotInput.dataset.hole);
+    const shotId = shotInput.dataset.shotId;
+    const round = v4State.activeRound;
+    if (!round || round.courseId !== courseData.id) return;
+    setShotSaveStatus(holeNumber, shotId, "typing", "入力中");
+    queueShotSave({ roundId: round.roundId, courseId: round.courseId, holeNumber, shotId, text: shotInput.value });
+    return;
+  }
   const reportInput = event.target.closest(".hole-report-editor textarea[data-report-type]");
   if (reportInput) {
     const holeNumber = Number(reportInput.dataset.hole);
@@ -2324,6 +2476,11 @@ strategyCard.addEventListener("input", (event) => {
   if (form?.dataset.hole) markRecordDirty(Number(form.dataset.hole));
 });
 strategyCard.addEventListener("focusout", (event) => {
+  const shotInput = event.target.closest(".shot-log-row textarea[data-shot-id]");
+  if (shotInput && v4State.activeRound) {
+    flushShotSave(`${v4State.activeRound.roundId}:${Number(shotInput.dataset.hole)}:${shotInput.dataset.shotId}`);
+    return;
+  }
   const reportInput = event.target.closest(".hole-report-editor textarea[data-report-type]");
   if (!reportInput || !v4State.activeRound) return;
   flushReportSave(`${v4State.activeRound.roundId}:${Number(reportInput.dataset.hole)}:${reportInput.dataset.reportType}`);
@@ -2361,6 +2518,12 @@ initializeV4Storage().then(() => {
   else renderStrategy();
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") flushPendingReports();
+  if (document.visibilityState === "hidden") {
+    flushPendingReports();
+    flushPendingShots();
+  }
 });
-window.addEventListener("pagehide", flushPendingReports);
+window.addEventListener("pagehide", () => {
+  flushPendingReports();
+  flushPendingShots();
+});
