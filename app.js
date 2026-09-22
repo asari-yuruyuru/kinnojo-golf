@@ -433,6 +433,19 @@ let osmGeoJsonText = "";
 let todayEditMode = false;
 let backupImportMessage = null;
 let backupImportStatus = null;
+const v4State = { ready: false, activeRound: null, rounds: [], error: null, migrationMessage: null };
+const V4_ACTIVE_ROUND_KEY = "activeRoundId";
+const REPORT_AUTOSAVE_DELAY_MS = 800;
+const reportSaveTimers = new Map();
+const pendingReportSaves = new Map();
+const reportEditVersions = new Map();
+let reportSaveQueue = Promise.resolve();
+const reportDefinitions = Object.freeze({
+  tee: { label: "Tショット報告", guide: "クラブ｜狙い｜避けたい場所｜風｜打つ前に考えたこと｜結果・球筋｜原因・気づき", promptId: "golf-report-tee", sequence: 1 },
+  second: { label: "セカンド報告", guide: "残り距離｜ライ・傾斜｜風｜クラブ｜狙い｜避けたい場所｜打つ前に考えたこと｜結果・球筋｜原因・気づき", promptId: "golf-report-second", sequence: 2 },
+  third: { label: "サード報告", guide: "残り距離｜ライ・傾斜｜風｜クラブ｜狙い｜避けたい場所｜打つ前に考えたこと｜結果・球筋｜原因・気づき", promptId: "golf-report-third", sequence: 3 },
+  holeOut: { label: "ホールアウト報告", guide: "アプローチ：距離｜ライ｜クラブ｜結果・気づき\nパター：1stパット距離｜傾斜｜結果・感覚\n最後に：ホール全体の反省・気づき", promptId: "golf-report-hole-out", sequence: 4 },
+});
 // 画面上の入力内容が明示保存済みかを示す一時状態です。保存データの形式は変えません。
 const dirtyRecordHoles = new Set();
 const storageKeyFor = (course) => `golf-tee-strategy:${course.id}:landing-zones`;
@@ -445,6 +458,435 @@ const playSurface = document.querySelector("#playSurface");
 const verificationScreen = document.querySelector("#verificationScreen");
 const developerScreen = document.querySelector("#developerScreen");
 const bottomNav = document.querySelector(".bottom-nav");
+const v4RoundStatus = document.querySelector("#v4RoundStatus");
+
+function v4SectionForHole(course, hole) {
+  if (course.id === sugiyamaCourseData.id) {
+    return { sectionId: hole.holeNumber <= 9 ? "west" : "north", sectionName: hole.holeNumber <= 9 ? "西" : "北", sectionHoleNumber: hole.sectionHoleNumber ?? (hole.holeNumber <= 9 ? hole.holeNumber : hole.holeNumber - 9) };
+  }
+  return { sectionId: hole.holeNumber <= 9 ? "out" : "in", sectionName: hole.holeNumber <= 9 ? "OUT" : "IN", sectionHoleNumber: hole.holeNumber <= 9 ? hole.holeNumber : hole.holeNumber - 9 };
+}
+
+function v4RoutingForCourse(course) {
+  const sugiyama = course.id === sugiyamaCourseData.id;
+  const sections = sugiyama ? [["west", "西"], ["north", "北"]] : [["out", "OUT"], ["in", "IN"]];
+  return {
+    label: sections.map(([, name]) => name).join("→"),
+    legs: sections.map(([sectionId, sectionNameSnapshot], index) => ({ legId: `leg-${index + 1}`, order: index + 1, sectionId, sectionNameSnapshot, occurrence: 1 })),
+  };
+}
+
+function v4CourseDefinition(course) {
+  const now = new Date().toISOString();
+  const sectionMap = new Map();
+  course.holes.forEach((hole) => {
+    const section = v4SectionForHole(course, hole);
+    if (!sectionMap.has(section.sectionId)) sectionMap.set(section.sectionId, { sectionId: section.sectionId, sectionName: section.sectionName, holes: [] });
+    sectionMap.get(section.sectionId).holes.push({
+      holeId: `${section.sectionId}-${section.sectionHoleNumber}`,
+      holeNumber: section.sectionHoleNumber,
+      legacyHoleNumber: hole.holeNumber,
+      par: hole.par,
+      tees: course.tees.map((tee) => ({ teeId: tee.id, teeName: tee.name, distanceYards: hole.tees?.[tee.id]?.distanceYards ?? null })),
+      courseShape: hole.courseShape ?? null,
+      officialStrategy: hole.officialStrategy ?? null,
+      mainRisk: hole.mainRisk ?? hole.mainRisks ?? null,
+      tacticalBrief: hole.tacticalBrief ?? null,
+      preRoundStrategyCandidate: hole.preRoundStrategyCandidate ?? null,
+    });
+  });
+  return { schemaVersion: 4, courseId: course.id, courseName: course.courseName, definitionVersion: 1, origin: "builtIn", sections: [...sectionMap.values()], createdAt: now, updatedAt: now };
+}
+
+function v4StrategySnapshot(hole, legacyRecord = null) {
+  if (legacyRecord) return {
+    primaryClubId: legacyRecord.preRoundPrimaryClub ?? null,
+    secondaryClubId: legacyRecord.preRoundSecondaryClub ?? null,
+    aggressiveClubId: legacyRecord.preRoundAggressiveClub ?? null,
+    mainRisks: hole.mainRisks ?? hole.mainRisk ?? null,
+    source: "v3RoundRecord",
+  };
+  const strategy = recommendationForPlay(hole);
+  return {
+    primaryClubId: strategy?.primaryRecommendation?.club?.id ?? strategy?.primary?.club?.id ?? null,
+    secondaryClubId: strategy?.secondary?.club?.id ?? null,
+    aggressiveClubId: strategy?.aggressiveOption?.club?.id ?? null,
+    mainRisks: hole.mainRisks ?? hole.mainRisk ?? null,
+    reasons: strategy?.primaryRecommendation?.reasons ?? strategy?.primary?.reasons ?? [],
+    source: "courseDefinition",
+  };
+}
+
+function createV4HoleLog(course, hole, teeId, playOrder, legId, legacyRecord = null, migrationTime = null) {
+  const now = migrationTime ?? new Date().toISOString();
+  const section = v4SectionForHole(course, hole);
+  const tee = course.tees.find((item) => item.id === teeId) ?? null;
+  const reports = [];
+  [["memo", legacyRecord?.memo], ["resultMemo", legacyRecord?.resultMemo]].forEach(([sourceField, text], index) => {
+    if (typeof text !== "string" || !text.length) return;
+    reports.push({ reportId: `legacy-${hole.holeNumber}-${sourceField}`, type: "legacyNote", sequence: index + 1, text, promptId: null, promptVersion: null, recordedAt: legacyRecord.recordedAt ?? null, updatedAt: legacyRecord.recordedAt ?? null, migrationSourceField: sourceField });
+  });
+  const structuredResult = legacyRecord ? {
+    actualClubId: legacyRecord.actualClubId ?? null,
+    actualClubName: legacyRecord.actualClubName ?? null,
+    otherClubName: legacyRecord.otherClubName ?? null,
+    shotResult: legacyRecord.shotResult ?? null,
+    firstPuttDistance: legacyRecord.firstPuttDistance ?? null,
+    recordedAt: legacyRecord.recordedAt ?? null,
+  } : {};
+  return {
+    roundHoleId: `${legId ?? "legacy"}-${section.sectionId}-${section.sectionHoleNumber}`,
+    playOrder,
+    legId,
+    courseHoleRef: { courseId: course.id, sectionId: section.sectionId, holeId: `${section.sectionId}-${section.sectionHoleNumber}`, holeNumber: section.sectionHoleNumber, legacyHoleNumber: hole.holeNumber },
+    holeSnapshot: { sectionName: section.sectionName, par: hole.par, teeId: tee?.id ?? null, teeName: tee?.name ?? null, distanceYards: tee ? hole.tees?.[tee.id]?.distanceYards ?? null : legacyRecord?.distanceYards ?? null },
+    strategySnapshot: v4StrategySnapshot(hole, legacyRecord),
+    structuredResult,
+    reports,
+    legacyV3: legacyRecord ? { originalRoundRecord: structuredClone(legacyRecord) } : null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function createV4RoundSession(course = courseData) {
+  const now = new Date();
+  const createdAt = now.toISOString();
+  const playDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const datePart = playDate.replaceAll("-", "");
+  const unique = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const routing = v4RoutingForCourse(course);
+  const holesBySection = new Map(routing.legs.map((leg) => [leg.sectionId, []]));
+  course.holes.forEach((hole) => holesBySection.get(v4SectionForHole(course, hole).sectionId)?.push(hole));
+  let playOrder = 0;
+  const holeLogs = routing.legs.flatMap((leg) => holesBySection.get(leg.sectionId).map((hole) => createV4HoleLog(course, hole, selected.tee, ++playOrder, leg.legId)));
+  return {
+    schemaVersion: 4,
+    roundId: `round_${datePart}_${unique}`,
+    playDate,
+    courseId: course.id,
+    courseNameSnapshot: course.courseName,
+    courseDefinitionVersion: 1,
+    teeSelection: { teeId: selected.tee, teeName: course.tees.find((tee) => tee.id === selected.tee)?.name ?? null },
+    routing,
+    status: "inProgress",
+    startedAt: createdAt,
+    endedAt: null,
+    roundMemo: null,
+    holeLogs,
+    createdAt,
+    updatedAt: createdAt,
+    migration: null,
+  };
+}
+
+function simpleV4Fingerprint(value) {
+  const text = JSON.stringify(value);
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function createMigratedV4Round(course, records, fingerprint) {
+  const migratedAt = new Date().toISOString();
+  const isSugiyama = course.id === sugiyamaCourseData.id;
+  const routing = isSugiyama ? v4RoutingForCourse(course) : { label: null, legs: [] };
+  const legBySection = new Map(routing.legs.map((leg) => [leg.sectionId, leg.legId]));
+  const holeLogs = records.map(({ hole, record }) => {
+    const section = v4SectionForHole(course, hole);
+    return createV4HoleLog(course, hole, null, isSugiyama ? hole.holeNumber : null, legBySection.get(section.sectionId) ?? null, record, migratedAt);
+  });
+  const recordedDates = records.map(({ record }) => record.recordedAt).filter(Boolean).sort();
+  return {
+    schemaVersion: 4,
+    roundId: `migrated_v3_${course.id.replace(/[^a-z0-9-]/gi, "-")}_${fingerprint}`,
+    playDate: isSugiyama ? "2026-09-21" : null,
+    courseId: course.id,
+    courseNameSnapshot: course.courseName,
+    courseDefinitionVersion: 1,
+    teeSelection: null,
+    routing,
+    status: "completed",
+    startedAt: null,
+    endedAt: null,
+    roundMemo: null,
+    holeLogs,
+    createdAt: migratedAt,
+    updatedAt: migratedAt,
+    migration: { sourceSchemaVersion: 3, sourceStorageKey: storageKeyFor(course), sourceCourseId: course.id, migratedAt, sourceFingerprint: fingerprint, confirmationStatus: "needsReview", playDateSource: isSugiyama ? "userConfirmedForMigration" : "unknown", routingSource: isSugiyama ? "userConfirmedForMigration" : "unknown", teeSelectionSource: "unknown", sourceRecordedAtRange: { first: recordedDates[0] ?? null, last: recordedDates.at(-1) ?? null } },
+  };
+}
+
+async function migrateV3CourseToV4(course) {
+  const records = course.holes.map((hole) => ({ hole, record: normalizeRoundRecord(hole.roundRecord) })).filter(({ record }) => record);
+  if (!records.length) return null;
+  const fingerprint = simpleV4Fingerprint(records.map(({ hole, record }) => ({ holeNumber: hole.holeNumber, record })));
+  const migrationKey = `v3Migration:${course.id}:${fingerprint}`;
+  if (await GolfV4Storage.getMetadata(migrationKey)) return null;
+  const round = createMigratedV4Round(course, records, fingerprint);
+  await GolfV4Storage.putRoundSession(round);
+  await GolfV4Storage.setMetadata(migrationKey, { status: "completed", roundId: round.roundId, migratedAt: round.migration.migratedAt });
+  return round;
+}
+
+async function refreshV4State() {
+  v4State.rounds = await GolfV4Storage.listRoundSessions();
+  const activeRoundId = await GolfV4Storage.getMetadata(V4_ACTIVE_ROUND_KEY);
+  v4State.activeRound = activeRoundId ? await GolfV4Storage.getRoundSession(activeRoundId) : null;
+  if (v4State.activeRound?.status !== "inProgress") {
+    v4State.activeRound = null;
+    if (activeRoundId) await GolfV4Storage.setMetadata(V4_ACTIVE_ROUND_KEY, null);
+  }
+  renderV4RoundStatus();
+}
+
+async function initializeV4Storage() {
+  try {
+    await GolfV4Storage.open();
+    await GolfV4Storage.putCourseDefinitions(courseCatalog.map(v4CourseDefinition));
+    const migrated = [];
+    for (const course of courseCatalog) {
+      const round = await migrateV3CourseToV4(course);
+      if (round) migrated.push(round);
+    }
+    v4State.migrationMessage = migrated.length ? `v3の実戦記録を${migrated.length}ラウンド分、安全に引き継ぎました。` : null;
+    v4State.ready = true;
+    await refreshV4State();
+  } catch (error) {
+    v4State.error = error instanceof Error ? error.message : "v4保存領域を準備できませんでした。";
+    v4State.ready = false;
+    renderV4RoundStatus();
+  }
+}
+
+async function migrateAvailableV3Records() {
+  if (!v4State.ready) return;
+  let changed = false;
+  for (const course of courseCatalog) {
+    if (await migrateV3CourseToV4(course)) changed = true;
+  }
+  if (changed) await refreshV4State();
+}
+
+function renderV4RoundStatus() {
+  if (!v4RoundStatus) return;
+  if (v4State.error) {
+    v4RoundStatus.hidden = false;
+    v4RoundStatus.className = "v4-round-status is-error";
+    v4RoundStatus.textContent = `ラウンド履歴：利用不可（${v4State.error}）`;
+    return;
+  }
+  if (!v4State.activeRound) {
+    v4RoundStatus.hidden = true;
+    return;
+  }
+  v4RoundStatus.hidden = false;
+  v4RoundStatus.className = "v4-round-status";
+  v4RoundStatus.innerHTML = `<span>進行中のラウンド</span><b>${escapeHtml(v4State.activeRound.courseNameSnapshot)}</b><small>${escapeHtml(v4State.activeRound.playDate ?? "日付未設定")} / ${escapeHtml(v4State.activeRound.routing?.label ?? "順路未設定")}</small>`;
+}
+
+async function startV4Round() {
+  if (!v4State.ready) throw new Error(v4State.error ?? "v4保存領域の準備中です。");
+  if (v4State.activeRound) throw new Error("進行中のラウンドを終了してから、新しいラウンドを開始してください。");
+  const round = createV4RoundSession(courseData);
+  await GolfV4Storage.putRoundSession(round);
+  await GolfV4Storage.setMetadata(V4_ACTIVE_ROUND_KEY, round.roundId);
+  v4State.activeRound = round;
+  v4State.rounds = [round, ...v4State.rounds];
+  resetRoundForNewPlay();
+  renderV4RoundStatus();
+  return round;
+}
+
+async function finishV4Round() {
+  if (!v4State.activeRound) return;
+  flushPendingReports();
+  await reportSaveQueue;
+  const now = new Date().toISOString();
+  const completed = { ...v4State.activeRound, status: "completed", endedAt: now, updatedAt: now };
+  await GolfV4Storage.putRoundSession(completed);
+  await GolfV4Storage.setMetadata(V4_ACTIVE_ROUND_KEY, null);
+  await refreshV4State();
+}
+
+async function syncV3RecordToActiveV4(hole) {
+  if (!v4State.activeRound || v4State.activeRound.courseId !== courseData.id || !hole.roundRecord) return;
+  const round = await GolfV4Storage.getRoundSession(v4State.activeRound.roundId);
+  if (!round || round.status !== "inProgress") return;
+  const log = round.holeLogs.find((item) => item.courseHoleRef?.legacyHoleNumber === hole.holeNumber);
+  if (!log) return;
+  const record = normalizeRoundRecord(hole.roundRecord);
+  log.structuredResult = {
+    actualClubId: record.actualClubId ?? null,
+    actualClubName: record.actualClubName ?? null,
+    otherClubName: record.otherClubName ?? null,
+    shotResult: record.shotResult ?? null,
+    firstPuttDistance: record.firstPuttDistance ?? null,
+    todayConditions: record.todayConditions ?? null,
+    preRoundMatched: record.preRoundMatched ?? null,
+    todayMatched: record.todayMatched ?? null,
+    recordedAt: record.recordedAt ?? null,
+  };
+  log.updatedAt = new Date().toISOString();
+  round.updatedAt = log.updatedAt;
+  await GolfV4Storage.putRoundSession(round);
+  v4State.activeRound = round;
+  v4State.rounds = v4State.rounds.map((item) => item.roundId === round.roundId ? round : item);
+}
+
+async function resetRoundInputsForCurrentCourse() {
+  const now = new Date().toISOString();
+  courseData.holes.forEach((hole) => {
+    const record = normalizeRoundRecord(hole.roundRecord);
+    if (record) {
+      hole.roundRecord = {
+        ...record,
+        actualClubId: null,
+        actualClubName: null,
+        otherClubName: null,
+        shotResult: null,
+        firstPuttDistance: null,
+        memo: null,
+        resultMemo: null,
+        preRoundMatched: null,
+        todayMatched: null,
+        recordedAt: null,
+      };
+    }
+    if (hole.todayAdjustment) hole.todayAdjustment = { ...hole.todayAdjustment, memo: null };
+    dirtyRecordHoles.delete(`${courseData.id}:${hole.holeNumber}`);
+  });
+  saveLandingZones(courseData);
+
+  if (v4State.activeRound?.courseId === courseData.id) {
+    const round = await GolfV4Storage.getRoundSession(v4State.activeRound.roundId);
+    if (round?.status === "inProgress") {
+      round.holeLogs.forEach((log) => {
+        log.structuredResult = {
+          ...(log.structuredResult ?? {}),
+          actualClubId: null,
+          actualClubName: null,
+          otherClubName: null,
+          shotResult: null,
+          firstPuttDistance: null,
+          preRoundMatched: null,
+          todayMatched: null,
+          recordedAt: null,
+        };
+        log.updatedAt = now;
+      });
+      round.updatedAt = now;
+      await GolfV4Storage.putRoundSession(round);
+      v4State.activeRound = round;
+      v4State.rounds = v4State.rounds.map((item) => item.roundId === round.roundId ? round : item);
+    }
+  }
+}
+
+function reportTypesForPar(par) {
+  if (par === 3) return ["tee", "holeOut"];
+  if (par === 4) return ["tee", "second", "holeOut"];
+  if (par >= 5) return ["tee", "second", "third", "holeOut"];
+  return ["tee", "holeOut"];
+}
+
+function activeV4HoleLog(holeNumber) {
+  if (!v4State.activeRound || v4State.activeRound.courseId !== courseData.id) return null;
+  return v4State.activeRound.holeLogs?.find((log) => log.courseHoleRef?.legacyHoleNumber === holeNumber) ?? null;
+}
+
+function setReportSaveStatus(holeNumber, type, status, message) {
+  const element = strategyCard.querySelector(`.report-save-status[data-hole="${holeNumber}"][data-report-type="${type}"]`);
+  if (!element) return;
+  element.dataset.status = status;
+  element.textContent = message;
+  const summaryStatus = element.closest(".hole-report-item")?.querySelector("summary b");
+  if (summaryStatus && ["saved", "empty"].includes(status)) summaryStatus.textContent = status === "saved" ? "入力済み" : "未入力";
+}
+
+async function persistV4Report({ roundId, courseId, holeNumber, type, text }) {
+  if (!v4State.activeRound || v4State.activeRound.roundId !== roundId || v4State.activeRound.courseId !== courseId) throw new Error("保存対象の進行中ラウンドが変わりました。");
+  const round = await GolfV4Storage.getRoundSession(roundId);
+  if (!round || round.status !== "inProgress" || round.courseId !== courseId) throw new Error("進行中のラウンドが見つかりません。");
+  const log = round.holeLogs.find((item) => item.courseHoleRef?.legacyHoleNumber === holeNumber);
+  if (!log) throw new Error("このホールの保存先が見つかりません。");
+  const definition = reportDefinitions[type];
+  if (!definition) throw new Error("報告の種類が正しくありません。");
+  const existingIndex = log.reports.findIndex((report) => report.type === type);
+  const now = new Date().toISOString();
+  if (text.length === 0) {
+    if (existingIndex >= 0) log.reports.splice(existingIndex, 1);
+  } else {
+    const existing = existingIndex >= 0 ? log.reports[existingIndex] : null;
+    const report = {
+      reportId: existing?.reportId ?? `report-${log.roundHoleId}-${type}`,
+      type,
+      sequence: Math.max(1, reportTypesForPar(log.holeSnapshot?.par).indexOf(type) + 1),
+      text,
+      promptId: definition.promptId,
+      promptVersion: 1,
+      recordedAt: existing?.recordedAt ?? now,
+      updatedAt: now,
+    };
+    if (existingIndex >= 0) log.reports[existingIndex] = report;
+    else log.reports.push(report);
+    log.reports.sort((a, b) => (a.sequence ?? 99) - (b.sequence ?? 99));
+  }
+  log.updatedAt = now;
+  round.updatedAt = now;
+  await GolfV4Storage.putRoundSession(round);
+  v4State.activeRound = round;
+  v4State.rounds = v4State.rounds.map((item) => item.roundId === round.roundId ? round : item);
+}
+
+function queueReportSave(payload) {
+  const key = `${payload.roundId}:${payload.holeNumber}:${payload.type}`;
+  const editVersion = (reportEditVersions.get(key) ?? 0) + 1;
+  reportEditVersions.set(key, editVersion);
+  pendingReportSaves.set(key, { ...payload, editVersion });
+  clearTimeout(reportSaveTimers.get(key));
+  reportSaveTimers.set(key, setTimeout(() => flushReportSave(key), REPORT_AUTOSAVE_DELAY_MS));
+}
+
+function flushReportSave(key) {
+  clearTimeout(reportSaveTimers.get(key));
+  reportSaveTimers.delete(key);
+  const payload = pendingReportSaves.get(key);
+  if (!payload) return reportSaveQueue;
+  pendingReportSaves.delete(key);
+  setReportSaveStatus(payload.holeNumber, payload.type, "saving", "保存中");
+  reportSaveQueue = reportSaveQueue.then(() => persistV4Report(payload)).then(() => {
+    if (reportEditVersions.get(key) === payload.editVersion) setReportSaveStatus(payload.holeNumber, payload.type, payload.text.length ? "saved" : "empty", payload.text.length ? "✓ 保存済み" : "未入力");
+  }).catch((error) => {
+    if (reportEditVersions.get(key) === payload.editVersion) setReportSaveStatus(payload.holeNumber, payload.type, "error", "保存エラー");
+    console.error("Report autosave failed:", error);
+  });
+  return reportSaveQueue;
+}
+
+function flushPendingReports() {
+  [...pendingReportSaves.keys()].forEach((key) => flushReportSave(key));
+}
+
+function renderHoleReports(hole) {
+  const active = v4State.activeRound;
+  if (!active || active.courseId !== courseData.id) {
+    const message = active ? "進行中ラウンドのコースを選ぶと記録できます。" : "ラウンドを開始すると報告を記録できます。";
+    return `<section class="hole-reports is-disabled"><div class="hole-reports-title"><b>ラウンド報告</b><span>未開始</span></div><p>${message}</p></section>`;
+  }
+  const log = activeV4HoleLog(hole.holeNumber);
+  if (!log) return `<section class="hole-reports is-disabled"><div class="hole-reports-title"><b>ラウンド報告</b><span>保存先なし</span></div><p>このホールの保存先を確認してください。</p></section>`;
+  const reportByType = new Map((log.reports ?? []).filter((report) => reportDefinitions[report.type]).map((report) => [report.type, report]));
+  const fields = reportTypesForPar(hole.par).map((type) => {
+    const definition = reportDefinitions[type];
+    const report = reportByType.get(type);
+    return `<details class="hole-report-item" data-report-type="${type}" ${report?.text ? "" : ""}><summary><span>${definition.label}</span><b>${report?.text ? "入力済み" : "未入力"}</b></summary><div class="hole-report-editor"><p class="report-guide">${escapeHtml(definition.guide).replaceAll("\n", "<br>")}</p><textarea rows="4" data-hole="${hole.holeNumber}" data-report-type="${type}" aria-label="${definition.label}" placeholder="必要なことだけ短く入力してください">${escapeHtml(report?.text ?? "")}</textarea><span class="report-save-status" data-hole="${hole.holeNumber}" data-report-type="${type}" data-status="${report?.text ? "saved" : "empty"}" aria-live="polite">${report?.text ? "✓ 保存済み" : "未入力"}</span></div></details>`;
+  }).join("");
+  return `<section class="hole-reports"><div class="hole-reports-title"><b>ラウンド報告</b><span>自動保存</span></div>${fields}</section>`;
+}
 
 function holeByNumber(number) {
   return courseData.holes.find((hole) => hole.holeNumber === number);
@@ -946,11 +1388,22 @@ function showVerificationScreen(show) {
   if (show) renderVerificationScreen();
 }
 
+function renderV4RoundManager() {
+  if (v4State.error) return `<section class="v4-round-manager is-error"><h2>ラウンド履歴（v4）</h2><p>IndexedDBを利用できません：${escapeHtml(v4State.error)}</p><p>既存のv3記録機能は引き続き利用できます。</p></section>`;
+  const active = v4State.activeRound;
+  const rows = v4State.rounds.map((round) => {
+    const recorded = round.holeLogs?.filter((log) => Object.keys(log.structuredResult ?? {}).length || (log.reports?.length ?? 0) > 0).length ?? 0;
+    const status = round.status === "inProgress" ? "進行中" : "完了";
+    return `<article class="v4-round-row"><div><b>${escapeHtml(round.courseNameSnapshot)}</b><span class="v4-status-${round.status}">${status}</span></div><p>${escapeHtml(round.playDate ?? "日付未確認")} / ${escapeHtml(round.routing?.label ?? "順路未確認")} / 記録 ${recorded}ホール</p><small>${round.migration ? "v3から引き継ぎ・要確認" : escapeHtml(round.roundId)}</small></article>`;
+  }).join("");
+  return `<section class="v4-round-manager"><h2>ラウンド履歴（v4）</h2><p>過去ラウンドを上書きせず、端末内のIndexedDBへ保存します。</p>${v4State.migrationMessage ? `<p class="v4-migration-message">${escapeHtml(v4State.migrationMessage)}</p>` : ""}${active ? `<div class="v4-active-round"><span>現在進行中</span><b>${escapeHtml(active.courseNameSnapshot)}</b><p>${escapeHtml(active.playDate)} / ${escapeHtml(active.routing?.label ?? "順路未設定")}</p><button id="finishV4Round" type="button">このラウンドを終了</button></div>` : `<button id="startNewRound" class="developer-action developer-action-danger" type="button" ${v4State.ready ? "" : "disabled"}>新しいラウンドを開始</button>`}<button id="resetRoundInputs" class="developer-action developer-action-reset" type="button">ラウンドをリセット</button><p class="v4-reset-note">現在選択中のコースの使用クラブ・結果・1stパット距離・メモだけを初期化します。戦略と報告原文は残ります。</p><details class="v4-round-history" ${v4State.rounds.length ? "" : "hidden"}><summary>保存済みラウンド ${v4State.rounds.length}件</summary><div>${rows}</div></details>${!v4State.ready ? `<p class="v4-preparing">v4保存領域を準備しています…</p>` : ""}</section>`;
+}
+
 function renderDeveloperScreen() {
   const hole = holeByNumber(selected.hole);
   developerScreen.innerHTML = `<div class="developer-heading"><button id="closeDeveloper" type="button">‹ プレー画面へ戻る</button><p class="eyebrow">SETTINGS / DEVELOPMENT</p><h2>設定 / 開発</h2><p>実測値、地図データ、JSONバックアップを扱う画面です。プレー中の判断には表示しません。</p></div>
     <div id="developerHoleSelector" class="developer-hole-selector">${Array.from({ length: 18 }, (_, index) => { const number = index + 1; return `<button type="button" data-developer-hole="${number}" aria-pressed="${selected.hole === number}">${number}</button>`; }).join("")}</div>
-    <button id="startNewRound" class="developer-action developer-action-danger" type="button">新しいラウンドを開始</button>
+    ${renderV4RoundManager()}
     ${renderRecommendationValidation()}
     ${renderRoundVerification()}
     ${courseData.id === "kinnojo-out" && hole.holeNumber === 1 ? `<button id="openVerification" class="developer-action" type="button">1番ホール データ確認・地図インポート</button>` : ""}
@@ -1539,6 +1992,7 @@ function renderCompactHoleCard(hole) {
     <p class="compact-risk"><b>注意：</b>${escapeHtml(compactRiskText(hole))}</p>
     ${primary?.reasons?.length ? `<ul class="compact-reasons">${primary.reasons.slice(0, 2).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>` : ""}
     ${renderCoursePreview(hole)}
+    ${renderHoleReports(hole)}
     <form class="compact-record-form" data-hole="${hole.holeNumber}">
       <div class="compact-input-grid"><label>使用クラブ<select name="actualClub">${compactSelectOptions(clubOptions, record.actualClubId, "選択")}</select></label><label>結果<select name="shotResult">${compactSelectOptions(resultOptions, record.shotResult, "選択")}</select></label><label>1stパット距離<input name="firstPuttDistance" type="number" inputmode="decimal" min="0" step="0.1" value="${inputValue(record.firstPuttDistance)}" placeholder="m" /></label></div>
       <label class="compact-other-club" ${record.actualClubId === "other" ? "" : "hidden"}>その他のクラブ<input name="otherClub" value="${escapeHtml(record.otherClubName ?? "")}" /></label>
@@ -1628,17 +2082,44 @@ verificationScreen.addEventListener("change", async (event) => {
   }
   renderVerificationScreen();
 });
-developerScreen.addEventListener("click", (event) => {
+developerScreen.addEventListener("click", async (event) => {
   if (event.target.closest("#closeDeveloper")) showDeveloperScreen(false);
   if (event.target.closest("#openVerification")) showVerificationScreen(true);
   if (event.target.closest("#developerEditToggle")) { editMode = !editMode; renderDeveloperScreen(); }
   const holeButton = event.target.closest("[data-developer-hole]");
   if (holeButton) { selected.hole = Number(holeButton.dataset.developerHole); selected.course = selected.hole <= 9 ? "out" : "in"; editMode = false; renderDeveloperScreen(); }
-  if (event.target.closest("#startNewRound") && window.confirm("当日条件・使用クラブ・結果・メモを全18ホール分リセットします。新しいラウンドを開始しますか？")) {
-    resetRoundForNewPlay();
-    editMode = false;
-    showDeveloperScreen(false);
-    window.scrollTo(0, 0);
+  if (event.target.closest("#startNewRound") && window.confirm("新しいラウンド履歴を作成し、現在画面の当日条件・使用クラブ・結果・メモをリセットします。開始しますか？")) {
+    try {
+      await startV4Round();
+      editMode = false;
+      showDeveloperScreen(false);
+      window.scrollTo(0, 0);
+    } catch (error) {
+      window.alert(`ラウンドを開始できませんでした：${error instanceof Error ? error.message : "保存領域を確認してください。"}`);
+      renderDeveloperScreen();
+    }
+    return;
+  }
+  if (event.target.closest("#finishV4Round") && window.confirm("現在のラウンドを終了しますか？ 記録は過去ラウンドとして残ります。")) {
+    try {
+      await finishV4Round();
+      renderDeveloperScreen();
+      renderV4RoundStatus();
+    } catch (error) {
+      window.alert(`ラウンドを終了できませんでした：${error instanceof Error ? error.message : "保存領域を確認してください。"}`);
+    }
+    return;
+  }
+  if (event.target.closest("#resetRoundInputs") && window.confirm(`${courseData.courseName}の使用クラブ・結果・1stパット距離・メモを全ホール分リセットします。コース戦略と報告原文は削除しません。よろしいですか？`)) {
+    try {
+      flushPendingReports();
+      await reportSaveQueue;
+      await resetRoundInputsForCurrentCourse();
+      renderDeveloperScreen();
+      renderCurrentPlayState();
+    } catch (error) {
+      window.alert(`ラウンド入力をリセットできませんでした：${error instanceof Error ? error.message : "保存領域を確認してください。"}`);
+    }
     return;
   }
   if (event.target.closest("#exportData")) exportCourseData();
@@ -1685,6 +2166,7 @@ developerScreen.addEventListener("change", async (event) => {
   if (!input?.files?.[0]) return;
   try {
     const result = await importCourseData(input.files[0]);
+    await migrateAvailableV3Records();
     backupImportStatus = "success";
     backupImportMessage = `${result.totalHoles}ホール中${result.matchedHoles}ホールを読み込み、実戦記録${result.restoredRoundRecords}件を復元しました。`;
   } catch (error) {
@@ -1711,7 +2193,7 @@ strategyCard.addEventListener("click", (event) => {
   if (event.target.closest("#openTodayEdit")) { todayEditMode = true; renderStrategy(); }
   if (event.target.closest("#closeTodayEdit")) { todayEditMode = false; renderStrategy(); }
 });
-strategyCard.addEventListener("submit", (event) => {
+strategyCard.addEventListener("submit", async (event) => {
   if (event.target.id === "addDistanceForm") {
     event.preventDefault();
     const hole = holeByNumber(selected.hole);
@@ -1775,7 +2257,7 @@ strategyCard.addEventListener("submit", (event) => {
   todayEditMode = false;
   renderStrategy();
 });
-strategyCard.addEventListener("submit", (event) => {
+strategyCard.addEventListener("submit", async (event) => {
   if (!event.target.matches(".compact-record-form, #shotRecordForm")) return;
   event.preventDefault();
   const form = event.target;
@@ -1813,6 +2295,11 @@ strategyCard.addEventListener("submit", (event) => {
     recordedAt: new Date().toISOString(),
   };
   saveLandingZones();
+  try {
+    await syncV3RecordToActiveV4(hole);
+  } catch (error) {
+    window.alert(`v3には保存しましたが、ラウンド履歴への同期に失敗しました：${error instanceof Error ? error.message : "IndexedDBを確認してください。"}`);
+  }
   dirtyRecordHoles.delete(recordStateKey(hole.holeNumber));
   renderStrategy();
 });
@@ -1823,8 +2310,23 @@ strategyCard.addEventListener("change", (event) => {
   if (other) other.hidden = event.target.value !== "other";
 });
 strategyCard.addEventListener("input", (event) => {
+  const reportInput = event.target.closest(".hole-report-editor textarea[data-report-type]");
+  if (reportInput) {
+    const holeNumber = Number(reportInput.dataset.hole);
+    const type = reportInput.dataset.reportType;
+    const round = v4State.activeRound;
+    if (!round || round.courseId !== courseData.id) return;
+    setReportSaveStatus(holeNumber, type, "typing", "入力中");
+    queueReportSave({ roundId: round.roundId, courseId: round.courseId, holeNumber, type, text: reportInput.value });
+    return;
+  }
   const form = event.target.closest(".compact-record-form, .today-adjustment-form");
   if (form?.dataset.hole) markRecordDirty(Number(form.dataset.hole));
+});
+strategyCard.addEventListener("focusout", (event) => {
+  const reportInput = event.target.closest(".hole-report-editor textarea[data-report-type]");
+  if (!reportInput || !v4State.activeRound) return;
+  flushReportSave(`${v4State.activeRound.roundId}:${Number(reportInput.dataset.hole)}:${reportInput.dataset.reportType}`);
 });
 strategyCard.addEventListener("change", (event) => {
   const form = event.target.closest(".compact-record-form, .today-adjustment-form");
@@ -1838,6 +2340,7 @@ strategyCard.addEventListener("change", async (event) => {
   if (!input?.files?.[0]) return;
   try {
     const result = await importCourseData(input.files[0]);
+    await migrateAvailableV3Records();
     backupImportStatus = "success";
     backupImportMessage = `${result.totalHoles}ホール中${result.matchedHoles}ホールを読み込み、実戦記録${result.restoredRoundRecords}件を復元しました。`;
     renderCurrentPlayState();
@@ -1853,3 +2356,11 @@ document.querySelector("#nextButton").addEventListener("click", () => selectHole
 courseCatalog.forEach((course) => loadSavedLandingZones(course));
 renderSelectors();
 renderStrategy();
+initializeV4Storage().then(() => {
+  if (!developerScreen.hidden) renderDeveloperScreen();
+  else renderStrategy();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushPendingReports();
+});
+window.addEventListener("pagehide", flushPendingReports);
