@@ -20,6 +20,7 @@
         <label class="course-picker-label">コース選択
           <select id="coursePicker" aria-label="ゴルフコース選択"></select>
         </label>
+        <div id="v4RoundStatus" class="v4-round-status" hidden></div>
         <p id="courseLabel" class="course-label">OUT COURSE</p>
         <button id="settingsButton" class="data-verification-button" type="button">設定 / 開発</button>
       </header>
@@ -50,6 +51,7 @@
       <button id="nextButton" class="nav-button nav-button-primary" type="button" aria-label="次のホールへ"><span>次のホール</span>›</button>
     </nav>
 
+    <script src="v4-storage.js"></script>
     <script src="app.js"></script>
     <script>
       if ("serviceWorker" in navigator) {
